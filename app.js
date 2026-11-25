@@ -306,6 +306,13 @@ function renderFriendRequests() {
 
     meta.appendChild(nameDiv);
     meta.appendChild(subDiv);
+    const presenceDiv = document.createElement('div');
+    presenceDiv.className = 'friend-presence';
+    presenceDiv.dataset.presenceUser = f.supabaseId || '';
+    const onlineNow = Boolean(cbPresenceUsers[f.supabaseId]);
+    presenceDiv.textContent = onlineNow ? '● В сети' : `○ ${cbFormatLastSeen(f.lastSeenAt)}`;
+    presenceDiv.classList.add(onlineNow ? 'is-online' : 'is-offline');
+    meta.appendChild(presenceDiv);
 
     const actions = document.createElement('div');
     actions.className = 'friend-actions';
@@ -368,6 +375,13 @@ function renderFriends() {
 
     meta.appendChild(nameDiv);
     meta.appendChild(subDiv);
+    const presenceDiv = document.createElement('div');
+    presenceDiv.className = 'friend-presence';
+    presenceDiv.dataset.presenceUser = f.supabaseId || '';
+    const onlineNow = Boolean(cbPresenceUsers[f.supabaseId]);
+    presenceDiv.textContent = onlineNow ? '● В сети' : `○ ${cbFormatLastSeen(f.lastSeenAt)}`;
+    presenceDiv.classList.add(onlineNow ? 'is-online' : 'is-offline');
+    meta.appendChild(presenceDiv);
 
     const actions = document.createElement('div');
     actions.className = 'friend-actions';
@@ -1580,6 +1594,7 @@ async function cbInit() {
     }
     cbAuthUser = sessionData.session.user;
     if (currentUser?.name) await cbEnsureProfile();
+    cbStartLastSeenHeartbeat();
     await cbLoadSocial();
     cbSubscribeSocial();
     cbStartPresence();
@@ -1626,7 +1641,7 @@ async function cbLoadSocial() {
   ])];
   let profiles = [];
   if (ids.length) {
-    const p = await cbSupabase.from('profiles').select('id,public_id,name,avatar').in('id', ids);
+    const p = await cbSupabase.from('profiles').select('id,public_id,name,avatar,last_seen_at').in('id', ids);
     if (p.error) throw p.error;
     profiles = p.data;
   }
@@ -1634,7 +1649,7 @@ async function cbLoadSocial() {
   friendRequests = incoming.data.map(r=>({...byId.get(r.sender_id), requestId:r.id, userId:byId.get(r.sender_id)?.public_id}));
   outgoingRequests = outgoing.data.map(r=>({...byId.get(r.receiver_id), requestId:r.id}));
   friendsList = links.data.map(r=>byId.get(r.user_a===uid?r.user_b:r.user_a)).filter(Boolean)
-    .map(p=>({userId:p.public_id,name:p.name,avatar:p.avatar,supabaseId:p.id}));
+    .map(p=>({userId:p.public_id,name:p.name,avatar:p.avatar,supabaseId:p.id,lastSeenAt:p.last_seen_at}));
   renderFriendRequests(); renderFriends();
   const count = document.getElementById('friends-count');
   if (count) count.textContent = friendsList.length;
@@ -1777,8 +1792,14 @@ function cbRenderDmFriends() {
   friendsList.forEach(f=>{
     const b=document.createElement('button'); b.type='button'; b.className='dm-friend'+(cbSelectedFriend?.supabaseId===f.supabaseId?' active':'');
     const img=document.createElement('img'); img.src=getValidAvatar(f.avatar,f.name||f.userId); img.alt='';
+    const info=document.createElement('span'); info.className='dm-friend-info';
     const name=document.createElement('span'); name.className='dm-friend-name'; name.textContent=f.name;
-    b.append(img,name); b.onclick=()=>{cbSelectedFriend=f;cbRenderDmFriends();cbLoadDirectMessages();};
+    const status=document.createElement('small'); status.className='friend-presence'; status.dataset.presenceUser=f.supabaseId || '';
+    const online=Boolean(cbPresenceUsers[f.supabaseId]);
+    status.textContent=online?'● В сети':`○ ${cbFormatLastSeen(f.lastSeenAt)}`;
+    status.classList.add(online?'is-online':'is-offline');
+    info.append(name,status);
+    b.append(img,info); b.onclick=()=>{cbSelectedFriend=f;cbRenderDmFriends();cbLoadDirectMessages();};
     el.appendChild(b);
   });
 }
@@ -1786,8 +1807,14 @@ async function cbLoadDirectMessages() {
   if(!cbSelectedFriend||!cbSupabase)return;
   const title=document.getElementById('dm-title'); title.innerHTML='';
   const titleImg=document.createElement('img'); titleImg.src=getValidAvatar(cbSelectedFriend.avatar,cbSelectedFriend.name); titleImg.alt='';
-  const titleName=document.createElement('span'); titleName.textContent=cbSelectedFriend.name;
-  title.append(titleImg,titleName);
+  const titleInfo=document.createElement('span');
+  const titleName=document.createElement('strong'); titleName.textContent=cbSelectedFriend.name;
+  const titleStatus=document.createElement('small'); titleStatus.className='friend-presence'; titleStatus.dataset.presenceUser=cbSelectedFriend.supabaseId || '';
+  const selectedOnline=Boolean(cbPresenceUsers[cbSelectedFriend.supabaseId]);
+  titleStatus.textContent=selectedOnline?'● В сети':`○ ${cbFormatLastSeen(cbSelectedFriend.lastSeenAt)}`;
+  titleStatus.classList.add(selectedOnline?'is-online':'is-offline');
+  titleInfo.append(titleName,titleStatus);
+  title.append(titleImg,titleInfo);
   const uid=cbAuthUser.id, other=cbSelectedFriend.supabaseId;
   const {data,error}=await cbSupabase.from('direct_messages').select('id,sender_id,receiver_id,body,created_at')
     .or(`and(sender_id.eq.${uid},receiver_id.eq.${other}),and(sender_id.eq.${other},receiver_id.eq.${uid})`)
@@ -1852,6 +1879,39 @@ let cbPresenceChannel = null;
 let cbPresenceUsers = {};
 let cbPresenceReady = false;
 
+
+let cbLastSeenTimer = null;
+async function cbSaveLastSeen() {
+  if (!cbSupabase || !cbAuthUser) return;
+  const stamp = new Date().toISOString();
+  const { error } = await cbSupabase.from('profiles')
+    .update({ last_seen_at: stamp }).eq('id', cbAuthUser.id);
+  if (error) console.warn('Не удалось сохранить время последнего посещения:', error);
+  if (cbProfile) cbProfile.last_seen_at = stamp;
+  friendsList.forEach(f => { if (f.supabaseId === cbAuthUser.id) f.lastSeenAt = stamp; });
+}
+function cbFormatLastSeen(value) {
+  if (!value) return 'Был(а) в сети: неизвестно';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Был(а) в сети: неизвестно';
+  const diff = Math.max(0, Date.now() - date.getTime());
+  if (diff < 60_000) return 'Был(а) в сети: меньше минуты назад';
+  if (diff < 3_600_000) return `Был(а) в сети: ${Math.floor(diff/60_000)} мин. назад`;
+  if (diff < 86_400_000) return `Был(а) в сети: ${Math.floor(diff/3_600_000)} ч. назад`;
+  return 'Был(а) в сети: ' + date.toLocaleString([], {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+function cbStartLastSeenHeartbeat() {
+  if (cbLastSeenTimer) clearInterval(cbLastSeenTimer);
+  cbSaveLastSeen();
+  cbLastSeenTimer = setInterval(cbSaveLastSeen, 60_000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') cbSaveLastSeen();
+  });
+  window.addEventListener('pagehide', () => {
+    // Best effort: the last periodic timestamp remains available if the browser closes abruptly.
+    cbSaveLastSeen();
+  });
+}
 function cbPresenceSnapshot() {
   const state = cbPresenceChannel?.presenceState?.() || {};
   const found = {};
@@ -1882,7 +1942,8 @@ function cbUpdatePresenceLabels() {
   document.querySelectorAll('[data-presence-user]').forEach(el => {
     const id = el.dataset.presenceUser;
     const online = Boolean(cbPresenceUsers[id]);
-    el.textContent = online ? '● В сети' : '○ Не в сети';
+    const friend = friendsList.find(f => f.supabaseId === id);
+    el.textContent = online ? '● В сети' : `○ ${cbFormatLastSeen(friend?.lastSeenAt)}`;
     el.classList.toggle('is-online', online);
     el.classList.toggle('is-offline', !online);
   });

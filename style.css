@@ -308,3 +308,13 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
   .browser-connect input { width: 100%; }
 }
 
+
+/* Last-seen status in friend list */
+.friend-presence{font-size:.78rem;margin-top:.28rem;line-height:1.35}
+.friend-presence.is-online{color:#55d99a}
+.friend-presence.is-offline{color:#9aa0ad}
+
+.dm-friend-info{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
+.dm-friend-info .friend-presence{display:block;font-size:.7rem}
+#dm-title>span{display:flex;flex-direction:column;gap:.15rem}
+#dm-title .friend-presence{font-size:.72rem;font-weight:400}
