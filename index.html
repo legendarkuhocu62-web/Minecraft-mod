@@ -87,7 +87,6 @@
         <span>Комната: <strong id="current-room-id"></strong></span>
         <button id="copy-invite-btn" class="btn-small btn-secondary">Копировать ссылку</button>
 
-        <!-- ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА ДЛЯ РОССИИ -->
         <div class="ru-mode-box">
           <span class="ru-label">🇷🇺 Для России</span>
           <button type="button" id="ru-toggle-btn" class="ru-switch" aria-pressed="false">Выкл</button>
@@ -95,21 +94,22 @@
       </div>
 
       <div class="browser-connect">
-        <input type="text" id="neko-url-input" placeholder="Поиск Google, сериал или адрес сайта...">
-        <button id="connect-browser-btn" class="btn-primary btn-small">Найти / Открыть</button>
+        <input type="text" id="neko-url-input" placeholder="Поиск в Google или введите URL">
+        <button id="connect-browser-btn" class="btn-primary btn-small">Найти в Google / Открыть</button>
         <button id="external-open-btn" class="btn-secondary btn-small" title="Открыть в новой вкладке">↗ Вкладка</button>
       </div>
     </header>
 
     <main class="workspace">
-      <div class="browser-container">
-        <!-- ВСТРОЕННЫЙ ПОИСК И ОТКРЫВАТЕЛЬ САЙТОВ -->
+      <div id="browser-container" class="browser-container">
+        <button type="button" id="expand-browser-btn" class="expand-btn" title="Во весь экран">⛶ На весь экран</button>
+
         <div id="google-launcher" class="google-launcher">
-          <div class="google-logo"><span>G</span><span>o</span><span>o</span><span>g</span><span>l</span><span>e</span></div>
-          <p id="google-hint" class="google-hint">Введи поисковый запрос, название сериала или ссылку на сайт</p>
+          <div class="google-logo">Google</div>
+          <p id="google-hint" class="google-hint">Введите запрос для поиска в Google или адрес сайта</p>
           <div class="google-search-box">
-            <input type="text" id="google-query-input" placeholder="Например: Воронины сериал или ссылка на сайт...">
-            <button type="button" id="google-search-btn" class="btn-primary">Найти</button>
+            <input type="text" id="google-query-input" placeholder="Поиск в Google или введите URL">
+            <button type="button" id="google-search-btn" class="btn-primary">Найти в Google</button>
           </div>
           <div id="search-results" class="search-results"></div>
         </div>
@@ -137,6 +137,17 @@
   </div>
 
   <script src="app.js"></script>
+  <script>
+    (function () {
+      const btn = document.getElementById('expand-browser-btn');
+      const box = document.getElementById('browser-container');
+      if (!btn || !box) return;
+      btn.addEventListener('click', () => {
+        const expanded = box.classList.toggle('expanded');
+        btn.textContent = expanded ? '✕ Свернуть' : '⛶ На весь экран';
+      });
+    })();
+  </script>
 </body>
 </html>
 

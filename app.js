@@ -1,6 +1,4 @@
 const PEER_PREFIX = 'cobrowser_v1_';
-
-// Если позже подключишь свой прокси-шлюз с RU IP, впиши его адрес сюда (например, 'https://ru-proxy.example.com/proxy?url=')
 const RU_PROXY_PREFIX = '';
 
 let currentUser = JSON.parse(localStorage.getItem('cobrowser_user')) || null;
@@ -349,7 +347,7 @@ function setRuMode(enabled) {
     const sysMsg = {
       type: 'system',
       text: nextVal
-        ? '🇷🇺 Режим «Для России» включён — приоритет российских сайтов и сериалов'
+        ? '🇷🇺 Режим «Для России» включён — поиск в Google с регионом РФ'
         : 'Режим «Для России» выключен'
     };
     broadcastRaw(sysMsg);
@@ -374,8 +372,8 @@ function updateRuModeUI() {
   ruToggleBtn.disabled = !(isHost() || hasControl());
 
   googleHint.textContent = active
-    ? '🇷🇺 Режим для России активен: ищем российские сайты и сериалы без VPN-ограничений'
-    : 'Введи поисковый запрос, название сериала или ссылку на сайт';
+    ? '🇷🇺 Режим для России включён — поиск в Google по РФ'
+    : 'Введите запрос для поиска в Google или адрес сайта';
 }
 
 function updateUI() {
@@ -455,7 +453,7 @@ document.getElementById('copy-invite-btn').onclick = () => {
   });
 };
 
-// --- 3. ПОИСК И ОТКРЫВАТЕЛЬ САЙТОВ ---
+// --- 3. ПОИСК GOOGLE И ОТКРЫВАТЕЛЬ САЙТОВ ---
 const iframe = document.getElementById('virtual-browser-frame');
 const googleLauncher = document.getElementById('google-launcher');
 const topInput = document.getElementById('neko-url-input');
@@ -477,43 +475,31 @@ function toFullUrl(raw) {
   return base;
 }
 
+function buildGoogleSearchUrl(query, extraParam = '') {
+  const q = encodeURIComponent((query || '').trim());
+  const ruParams = roomState.ruMode ? '&gl=ru&hl=ru' : '';
+  return `https://www.google.com/search?q=${q}${extraParam}${ruParams}`;
+}
+
 function renderGoogleResults(query) {
   searchResultsEl.innerHTML = '';
   const q = (query || '').trim();
   if (!q) return;
 
-  const ruSuffix = roomState.ruMode ? ' смотреть онлайн сериал' : '';
-  const encoded = encodeURIComponent(q + ruSuffix);
-
-  const items = roomState.ruMode
-    ? [
-        {
-          title: `🇷🇺 Сериалы и сайты РФ: «${q}»`,
-          url: `https://www.google.com/search?q=${encoded}&gl=ru&hl=ru`
-        },
-        {
-          title: `🇷🇺 Поиск в Яндексе: «${q} сериал»`,
-          url: `https://ya.ru/search/?text=${encodeURIComponent(q + ' сериал смотреть онлайн')}`
-        },
-        {
-          title: `🇷🇺 Видео по запросу: «${q}»`,
-          url: `https://www.google.com/search?tbm=vid&q=${encoded}&gl=ru&hl=ru`
-        }
-      ]
-    : [
-        {
-          title: `Google Поиск: «${q}»`,
-          url: `https://www.google.com/search?q=${encodeURIComponent(q)}`
-        },
-        {
-          title: `Google Картинки: «${q}»`,
-          url: `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(q)}`
-        },
-        {
-          title: `Google Видео: «${q}»`,
-          url: `https://www.google.com/search?tbm=vid&q=${encodeURIComponent(q)}`
-        }
-      ];
+  const items = [
+    {
+      title: `Найти в Google: «${q}»`,
+      url: buildGoogleSearchUrl(q)
+    },
+    {
+      title: `Картинки в Google: «${q}»`,
+      url: buildGoogleSearchUrl(q, '&tbm=isch')
+    },
+    {
+      title: `Видео в Google: «${q}»`,
+      url: buildGoogleSearchUrl(q, '&tbm=vid')
+    }
+  ];
 
   items.forEach(item => {
     const card = document.createElement('div');
@@ -533,7 +519,7 @@ function renderGoogleResults(query) {
     const openTabBtn = document.createElement('button');
     openTabBtn.type = 'button';
     openTabBtn.className = 'btn-primary btn-small';
-    openTabBtn.textContent = 'Открыть';
+    openTabBtn.textContent = 'Найти в Google';
     openTabBtn.onclick = () => {
       window.open(item.url, '_blank', 'noopener,noreferrer');
     };
@@ -576,7 +562,7 @@ function sendNavigation(nextState) {
   }
 }
 
-function handleSearchOrOpen(rawValue) {
+function handleSearchOrOpen(rawValue, openGoogleImmediately = false) {
   const val = (rawValue || '').trim();
   if (!val) {
     sendNavigation({ mode: 'search', query: '', browserUrl: '' });
@@ -588,28 +574,31 @@ function handleSearchOrOpen(rawValue) {
     sendNavigation({ mode: 'frame', query: val, browserUrl: url });
   } else {
     sendNavigation({ mode: 'search', query: val, browserUrl: '' });
+    if (openGoogleImmediately) {
+      window.open(buildGoogleSearchUrl(val), '_blank', 'noopener,noreferrer');
+    }
   }
 }
 
 document.getElementById('connect-browser-btn').onclick = () => {
-  handleSearchOrOpen(topInput.value);
+  handleSearchOrOpen(topInput.value, true);
 };
 
 topInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    handleSearchOrOpen(topInput.value);
+    handleSearchOrOpen(topInput.value, true);
   }
 });
 
 document.getElementById('google-search-btn').onclick = () => {
-  handleSearchOrOpen(googleQueryInput.value);
+  handleSearchOrOpen(googleQueryInput.value, true);
 };
 
 googleQueryInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    handleSearchOrOpen(googleQueryInput.value);
+    handleSearchOrOpen(googleQueryInput.value, true);
   }
 });
 
@@ -617,7 +606,7 @@ document.getElementById('external-open-btn').onclick = () => {
   const q = (topInput.value || googleQueryInput.value || roomState.query || '').trim();
   const target = roomState.browserUrl
     ? roomState.browserUrl
-    : (q ? `https://www.google.com/search?q=${encodeURIComponent(q)}` : 'https://www.google.com');
+    : (q ? buildGoogleSearchUrl(q) : 'https://www.google.com');
   window.open(target, '_blank', 'noopener,noreferrer');
 };
 

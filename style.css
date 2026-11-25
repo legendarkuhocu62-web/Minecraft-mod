@@ -15,7 +15,7 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; overflow-x:
 
 .screen { display: none; min-height: 100vh; width: 100vw; }
 .screen.active { display: flex; align-items: center; justify-content: center; padding: 1rem; }
-#room-screen.active { flex-direction: column; align-items: stretch; justify-content: flex-start; padding: 0; height: 100vh; overflow: hidden; }
+#room-screen.active { flex-direction: column; align-items: stretch; justify-content: flex-start; padding: 0; min-height: 100vh; }
 
 .card {
   background: var(--surface); border: 1px solid var(--border);
@@ -48,7 +48,6 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 .btn-small { padding: 0.45rem 0.85rem; font-size: 0.85rem; }
 .btn-link { background: none; color: var(--primary); font-size: 0.85rem; }
 
-/* Переключатель 🇷🇺 Для России */
 .ru-mode-box {
   display: inline-flex; align-items: center; gap: 0.45rem;
   background: var(--bg); border: 1px solid var(--border);
@@ -64,7 +63,6 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
   color: #ffffff;
 }
 
-/* Модалка обрезки в кружочек */
 .modal {
   position: fixed; inset: 0; background: rgba(0,0,0,0.78); z-index: 100;
   display: flex; align-items: center; justify-content: center; padding: 1rem;
@@ -102,15 +100,32 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 .browser-connect input { width: 260px; padding: 0.45rem 0.75rem; font-size: 0.85rem; }
 .badge-host { background: rgba(245, 158, 11, 0.15); color: var(--gold); padding: 0.3rem 0.7rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; }
 
-.workspace { display: flex; flex: 1; height: calc(100vh - 56px); }
-.browser-container { flex: 1; position: relative; background: #1f2125; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-.browser-container iframe { width: 100%; height: 100%; border: none; background: #fff; }
+.workspace { display: flex; flex: 1; min-height: calc(100vh - 56px); }
+.browser-container {
+  flex: 1; position: relative; background: #1f2125;
+  display: flex; align-items: stretch; justify-content: stretch;
+  min-height: 78vh; width: 100%; overflow: hidden;
+}
+.browser-container.expanded {
+  position: fixed; inset: 0; z-index: 90;
+  height: 100vh; width: 100vw; min-height: 100vh; border-radius: 0;
+}
+.expand-btn {
+  position: absolute; top: 10px; right: 10px; z-index: 30;
+  background: rgba(15, 17, 21, 0.82); border: 1px solid var(--border);
+  padding: 0.4rem 0.75rem; font-size: 0.78rem; border-radius: 8px;
+  backdrop-filter: blur(6px);
+}
+.expand-btn:hover { background: var(--primary); }
+
+.browser-container iframe { width: 100%; height: 100%; min-height: 78vh; border: none; background: #fff; display: block; }
+.browser-container.expanded iframe { height: 100vh; min-height: 100vh; }
+
 .viewer-shield { position: absolute; inset: 0; z-index: 20; background: rgba(0,0,0,0.02); cursor: not-allowed; }
 .hidden { display: none !important; }
 
-/* Экран в стиле мобильного Google */
 .google-launcher {
-  width: 100%; height: 100%; overflow-y: auto; padding: 2rem 1.25rem;
+  width: 100%; height: 100%; min-height: 78vh; overflow-y: auto; padding: 2.2rem 1.25rem;
   background: #1f2125; color: #e8eaed;
   display: flex; flex-direction: column; align-items: center; gap: 1.1rem;
 }
@@ -166,9 +181,9 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 .chat-form button { background: var(--primary); color: white; padding: 0 0.9rem; }
 
 @media (max-width: 768px) {
-  #room-screen.active { height: auto; min-height: 100vh; overflow: visible; }
-  .workspace { flex-direction: column; height: auto; }
-  .browser-container { height: 74vh; min-height: 460px; }
+  .workspace { flex-direction: column; min-height: auto; }
+  .browser-container { height: 82vh; min-height: 620px; width: 100%; }
+  .browser-container iframe, .google-launcher { min-height: 620px; }
   .sidebar { width: 100%; border-left: none; border-top: 1px solid var(--border); min-height: 360px; }
   .browser-connect input { width: 100%; }
 }
