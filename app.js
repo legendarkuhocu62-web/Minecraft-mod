@@ -1518,34 +1518,38 @@ async function renderSearchHub(query) {
       const cxParam = GOOGLE_CSE_CX ? `&cx=${encodeURIComponent(GOOGLE_CSE_CX)}` : '';
       const gUrl = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(GOOGLE_SEARCH_API_KEY)}${cxParam}&q=${encodeURIComponent(q)}`;
       const res = await fetch(gUrl, { signal: AbortSignal.timeout(4000) });
-      if (res.ok) {
-        const data = await res.json();
-        const items = Array.isArray(data.items) ? data.items.slice(0, 8) : [];
-        if (items.length) {
-          if (ytSearchStatusEl) {
-            ytSearchStatusEl.textContent = `Найдено через Google (${items.length})`;
-          }
-          const frag = document.createDocumentFragment();
-          for (const item of items) {
-            const link = item.link || '';
-            if (!link) continue;
-            const foundYtId = extractYouTubeId(link);
-            const thumb = foundYtId
-              ? `https://i.ytimg.com/vi/${foundYtId}/hqdefault.jpg`
-              : (item.pagemap?.cse_thumbnail?.[0]?.src || '');
-            frag.appendChild(createVideoCard({
-              url: link,
-              title: item.title || link,
-              channel: item.displayLink || 'Google',
-              durationSec: 0,
-              thumb,
-              isDirectVideo: Boolean(foundYtId)
-            }));
-          }
-          if (frag.children.length) {
-            searchResultsEl.replaceChildren(frag);
-            return;
-          }
+      const data = await res.json().catch(() => null);
+
+      if (res.ok && data && Array.isArray(data.items) && data.items.length) {
+        const items = data.items.slice(0, 8);
+        if (ytSearchStatusEl) {
+          ytSearchStatusEl.textContent = `Найдено через Google (${items.length})`;
+        }
+        const frag = document.createDocumentFragment();
+        for (const item of items) {
+          const link = item.link || '';
+          if (!link) continue;
+          const foundYtId = extractYouTubeId(link);
+          const thumb = foundYtId
+            ? `https://i.ytimg.com/vi/${foundYtId}/hqdefault.jpg`
+            : (item.pagemap?.cse_thumbnail?.[0]?.src || '');
+          frag.appendChild(createVideoCard({
+            url: link,
+            title: item.title || link,
+            channel: item.displayLink || 'Google',
+            durationSec: 0,
+            thumb,
+            isDirectVideo: Boolean(foundYtId)
+          }));
+        }
+        if (frag.children.length) {
+          searchResultsEl.replaceChildren(frag);
+          return;
+        }
+      } else if (!res.ok) {
+        const apiErrMsg = data?.error?.message || `HTTP ${res.status}`;
+        if (ytSearchStatusEl) {
+          ytSearchStatusEl.textContent = `Google API: ${apiErrMsg} — пробую резерв...`;
         }
       }
     } catch (_) {}
