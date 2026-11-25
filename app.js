@@ -3,6 +3,9 @@ const RU_PROXY_PREFIX = '';
 
 let currentUser = JSON.parse(localStorage.getItem('cobrowser_user')) || null;
 let friendsList = JSON.parse(localStorage.getItem('cobrowser_friends')) || [];
+let friendRequests = JSON.parse(localStorage.getItem('cobrowser_friend_requests')) || [];
+let outgoingRequests = JSON.parse(localStorage.getItem('cobrowser_outgoing_requests')) || [];
+
 let avatarSeed = currentUser?.seed || Math.random().toString(36).substring(7);
 let pendingAvatarDataUrl = currentUser?.avatar || null;
 let pendingInviteRoom = null;
@@ -64,44 +67,268 @@ function getMyUserId() {
   return currentUser?.id || peer?.id || '';
 }
 
-// --- ДРУЗЬЯ ---
-function saveFriends() {
+function getGeneratedAvatarUrl(seed) {
+  return `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(seed || 'Guest')}`;
+}
+
+function getValidAvatar(avatar, fallbackSeed) {
+  if (typeof avatar === 'string' && avatar.trim().length > 0) {
+    return avatar.trim();
+  }
+  return getGeneratedAvatarUrl(fallbackSeed || 'Guest');
+}
+
+// --- ДРУЗЬЯ И ЗАЯВКИ В ДРУЗЬЯ ---
+function persistFriendsData() {
   localStorage.setItem('cobrowser_friends', JSON.stringify(friendsList));
+  localStorage.setItem('cobrowser_friend_requests', JSON.stringify(friendRequests));
+  localStorage.setItem('cobrowser_outgoing_requests', JSON.stringify(outgoingRequests));
   renderFriends();
+  renderFriendRequests();
   renderUsers();
 }
 
 function isFriend(userObj) {
   if (!userObj) return false;
   return friendsList.some(f =>
-    (userObj.peerId && f.peerId === userObj.peerId) ||
-    (userObj.userId && f.userId === userObj.userId) ||
-    (userObj.name && f.name.toLowerCase() === userObj.name.toLowerCase())
+    (userObj.userId && f.userId && f.userId === userObj.userId) ||
+    (userObj.peerId && f.peerId && f.peerId === userObj.peerId) ||
+    (userObj.name && f.name && f.name.toLowerCase() === userObj.name.toLowerCase())
   );
 }
 
-function addFriend(userObj) {
-  if (!userObj) return;
-  const rawName = (userObj.name || '').trim();
-  const rawId = (userObj.userId || userObj.peerId || '').trim();
-  if (!rawName && !rawId) return;
-  if (rawId && (rawId === currentUser?.id || rawId === peer?.id)) return;
-  if (isFriend(userObj)) return;
+function hasOutgoingRequest(userObj) {
+  if (!userObj) return false;
+  return outgoingRequests.some(r =>
+    (userObj.userId && r.userId && r.userId === userObj.userId) ||
+    (userObj.peerId && r.peerId && r.peerId === userObj.peerId) ||
+    (userObj.name && r.name && r.name.toLowerCase() === userObj.name.toLowerCase())
+  );
+}
 
-  const displayName = rawName || rawId;
-  friendsList.push({
-    userId: rawId,
-    peerId: userObj.peerId || '',
-    name: displayName,
-    avatar: userObj.avatar || getGeneratedAvatarUrl(displayName),
-    lastRoom: roomState.id || ''
+function upsertFriendRecord(record) {
+  const realAvatar = getValidAvatar(record.avatar, record.name || record.userId);
+  const existingIdx = friendsList.findIndex(f =>
+    (record.userId && f.userId && f.userId === record.userId) ||
+    (record.peerId && f.peerId && f.peerId === record.peerId) ||
+    (record.name && f.name && f.name.toLowerCase() === record.name.toLowerCase())
+  );
+
+  const cleanEntry = {
+    userId: record.userId || (existingIdx >= 0 ? friendsList[existingIdx].userId : ''),
+    peerId: record.peerId || (existingIdx >= 0 ? friendsList[existingIdx].peerId : ''),
+    name: (record.name || record.userId || 'Друг').trim(),
+    avatar: realAvatar,
+    lastRoom: record.lastRoom || roomState.id || (existingIdx >= 0 ? friendsList[existingIdx].lastRoom : '')
+  };
+
+  if (existingIdx >= 0) {
+    friendsList[existingIdx] = { ...friendsList[existingIdx], ...cleanEntry };
+  } else {
+    friendsList.push(cleanEntry);
+  }
+
+  outgoingRequests = outgoingRequests.filter(r =>
+    !(cleanEntry.userId && r.userId === cleanEntry.userId) &&
+    !(cleanEntry.peerId && r.peerId === cleanEntry.peerId) &&
+    !(cleanEntry.name && r.name.toLowerCase() === cleanEntry.name.toLowerCase())
+  );
+
+  persistFriendsData();
+}
+
+function sendDirectPeerMessage(targetPeerId, payload) {
+  if (!peer || peer.destroyed || !targetPeerId || targetPeerId === peer.id) return false;
+  const existingConn = connections.get(targetPeerId) || (hostConn && hostConn.peer === targetPeerId ? hostConn : null);
+  if (existingConn && existingConn.open) {
+    existingConn.send(payload);
+    return true;
+  }
+  const c = peer.connect(targetPeerId, { reliable: true });
+  c.on('open', () => {
+    c.send(payload);
   });
-  saveFriends();
+  return true;
+}
+
+function sendFriendRequest(targetUser) {
+  if (!targetUser || !currentUser) return;
+  const targetId = (targetUser.userId || targetUser.peerId || '').trim();
+  const targetName = (targetUser.name || targetUser.userId || '').trim();
+  if (!targetId && !targetName) return;
+  if (targetId && (targetId === currentUser.id || targetId === peer?.id)) return;
+  if (isFriend(targetUser)) return;
+
+  const myProfile = {
+    userId: currentUser.id,
+    peerId: peer?.id || '',
+    name: currentUser.name,
+    avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name),
+    roomId: roomState.id || ''
+  };
+
+  if (!hasOutgoingRequest(targetUser)) {
+    outgoingRequests.push({
+      userId: targetUser.userId || '',
+      peerId: targetUser.peerId || '',
+      name: targetName
+    });
+  }
+
+  const reqPayload = {
+    type: 'friend-request',
+    from: myProfile,
+    toUserId: targetUser.userId || '',
+    toPeerId: targetUser.peerId || ''
+  };
+
+  // Если знаем прямой peerId — шлём напрямую
+  if (targetUser.peerId) {
+    sendDirectPeerMessage(targetUser.peerId, reqPayload);
+  }
+  // Если в комнате — можно маршрутизировать через хоста по userId/peerId
+  if (hostConn && hostConn.open) {
+    hostConn.send(reqPayload);
+  } else if (isHost()) {
+    broadcastRaw(reqPayload);
+  }
+
+  persistFriendsData();
+  alert(`Предложение в друзья отправлено пользователю ${targetName}`);
+}
+
+function handleIncomingFriendRequest(msg) {
+  const from = msg.from;
+  if (!from) return;
+  if (from.userId && from.userId === currentUser?.id) return;
+  if (isFriend(from)) return;
+
+  const exists = friendRequests.some(r =>
+    (from.userId && r.userId === from.userId) ||
+    (from.peerId && r.peerId === from.peerId)
+  );
+  if (!exists) {
+    friendRequests.push({
+      userId: from.userId || '',
+      peerId: from.peerId || '',
+      name: from.name || 'Пользователь',
+      avatar: getValidAvatar(from.avatar, from.name || from.userId),
+      roomId: from.roomId || ''
+    });
+    persistFriendsData();
+    addSystemMessage(`💌 Новое предложение в друзья от ${from.name}`);
+  }
+}
+
+function acceptFriendRequest(index) {
+  const req = friendRequests[index];
+  if (!req) return;
+  friendRequests.splice(index, 1);
+
+  upsertFriendRecord({
+    userId: req.userId,
+    peerId: req.peerId,
+    name: req.name,
+    avatar: req.avatar,
+    lastRoom: req.roomId || roomState.id || ''
+  });
+
+  const acceptPayload = {
+    type: 'friend-accept',
+    from: {
+      userId: currentUser.id,
+      peerId: peer?.id || '',
+      name: currentUser.name,
+      avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name),
+      roomId: roomState.id || ''
+    },
+    toUserId: req.userId || '',
+    toPeerId: req.peerId || ''
+  };
+
+  if (req.peerId) {
+    sendDirectPeerMessage(req.peerId, acceptPayload);
+  }
+  if (hostConn && hostConn.open) {
+    hostConn.send(acceptPayload);
+  } else if (isHost()) {
+    broadcastRaw(acceptPayload);
+  }
+}
+
+function declineFriendRequest(index) {
+  friendRequests.splice(index, 1);
+  persistFriendsData();
 }
 
 function removeFriend(index) {
   friendsList.splice(index, 1);
-  saveFriends();
+  persistFriendsData();
+}
+
+function renderFriendRequests() {
+  const listEl = document.getElementById('friend-requests-list');
+  const countEl = document.getElementById('requests-count');
+  const badgeEl = document.getElementById('friend-req-badge');
+  if (!listEl || !countEl) return;
+
+  countEl.textContent = friendRequests.length;
+  if (badgeEl) {
+    badgeEl.textContent = friendRequests.length;
+    badgeEl.classList.toggle('hidden', friendRequests.length === 0);
+  }
+
+  listEl.innerHTML = '';
+  if (!friendRequests.length) {
+    listEl.innerHTML = '<li class="friend-sub" style="padding:0.4rem">Входящих предложений пока нет</li>';
+    return;
+  }
+
+  friendRequests.forEach((req, idx) => {
+    const li = document.createElement('li');
+    li.className = 'friend-item';
+
+    const img = document.createElement('img');
+    img.src = getValidAvatar(req.avatar, req.name || req.userId);
+    img.alt = req.name;
+
+    const meta = document.createElement('div');
+    meta.className = 'friend-meta';
+
+    const nameDiv = document.createElement('div');
+    nameDiv.className = 'friend-name';
+    nameDiv.textContent = req.name;
+
+    const subDiv = document.createElement('div');
+    subDiv.className = 'friend-sub';
+    subDiv.textContent = req.userId ? `ID: ${req.userId}` : 'Хочет добавить в друзья';
+
+    meta.appendChild(nameDiv);
+    meta.appendChild(subDiv);
+
+    const actions = document.createElement('div');
+    actions.className = 'friend-actions';
+
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'btn-primary btn-small';
+    okBtn.textContent = 'Принять';
+    okBtn.onclick = () => acceptFriendRequest(idx);
+
+    const noBtn = document.createElement('button');
+    noBtn.type = 'button';
+    noBtn.className = 'btn-secondary btn-small';
+    noBtn.textContent = '✕';
+    noBtn.onclick = () => declineFriendRequest(idx);
+
+    actions.appendChild(okBtn);
+    actions.appendChild(noBtn);
+
+    li.appendChild(img);
+    li.appendChild(meta);
+    li.appendChild(actions);
+    listEl.appendChild(li);
+  });
 }
 
 function renderFriends() {
@@ -113,7 +340,7 @@ function renderFriends() {
   listEl.innerHTML = '';
 
   if (!friendsList.length) {
-    listEl.innerHTML = '<li class="friend-sub" style="padding:0.5rem">Друзей пока нет. Нажми «+ Друг» у участника в комнате или вбей ник/ID выше.</li>';
+    listEl.innerHTML = '<li class="friend-sub" style="padding:0.5rem">Список друзей пока пуст.</li>';
     return;
   }
 
@@ -122,7 +349,7 @@ function renderFriends() {
     li.className = 'friend-item';
 
     const img = document.createElement('img');
-    img.src = f.avatar || getGeneratedAvatarUrl(f.name);
+    img.src = getValidAvatar(f.avatar, f.name || f.userId);
     img.alt = f.name;
 
     const meta = document.createElement('div');
@@ -134,7 +361,7 @@ function renderFriends() {
 
     const subDiv = document.createElement('div');
     subDiv.className = 'friend-sub';
-    const idPart = f.userId ? `ID: ${f.userId}` : 'Без ID';
+    const idPart = f.userId ? `ID: ${f.userId}` : 'Друг';
     const roomPart = f.lastRoom ? ` · Комната: ${f.lastRoom}` : '';
     subDiv.textContent = `${idPart}${roomPart}`;
 
@@ -180,6 +407,7 @@ document.getElementById('tab-friends-btn').onclick = () => {
   document.getElementById('tab-room-btn').classList.remove('active');
   document.getElementById('lobby-tab-friends').classList.add('active');
   document.getElementById('lobby-tab-room').classList.remove('active');
+  renderFriendRequests();
   renderFriends();
 };
 
@@ -187,10 +415,15 @@ document.getElementById('add-friend-manual-btn').onclick = () => {
   const input = document.getElementById('friend-name-input');
   const val = input.value.trim();
   if (!val) return;
-  if (val.startsWith('u_')) {
-    addFriend({ userId: val, name: val });
+  const inRoomUser = roomState.users.find(u =>
+    u.userId === val || u.peerId === val || u.name.toLowerCase() === val.toLowerCase()
+  );
+  if (inRoomUser) {
+    sendFriendRequest(inRoomUser);
+  } else if (val.startsWith('u_')) {
+    sendFriendRequest({ userId: val, name: val });
   } else {
-    addFriend({ name: val });
+    sendFriendRequest({ name: val });
   }
   input.value = '';
 };
@@ -206,12 +439,8 @@ const cropX = document.getElementById('crop-x');
 const cropY = document.getElementById('crop-y');
 const cropZoomVal = document.getElementById('crop-zoom-val');
 
-function getGeneratedAvatarUrl(seed) {
-  return `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(seed || 'Guest')}`;
-}
-
 function updateAvatarPreview() {
-  avatarImg.src = pendingAvatarDataUrl || getGeneratedAvatarUrl(avatarSeed);
+  avatarImg.src = getValidAvatar(pendingAvatarDataUrl, avatarSeed);
 }
 
 document.getElementById('random-avatar-btn').onclick = () => {
@@ -305,7 +534,7 @@ document.getElementById('apply-crop-btn').onclick = () => {
 document.getElementById('save-profile-btn').onclick = () => {
   const name = usernameInput.value.trim();
   if (!name) return alert('Введи свой никнейм!');
-  const finalAvatar = pendingAvatarDataUrl || getGeneratedAvatarUrl(avatarSeed);
+  const finalAvatar = getValidAvatar(pendingAvatarDataUrl, avatarSeed || name);
 
   currentUser = {
     id: currentUser?.id || ('u_' + Math.random().toString(36).substring(2, 8)),
@@ -327,7 +556,7 @@ document.getElementById('save-profile-btn').onclick = () => {
 document.getElementById('edit-profile-btn').onclick = () => {
   usernameInput.value = currentUser.name;
   avatarSeed = currentUser.seed || avatarSeed;
-  pendingAvatarDataUrl = currentUser.avatar?.startsWith('data:image') ? currentUser.avatar : null;
+  pendingAvatarDataUrl = getValidAvatar(currentUser.avatar, avatarSeed);
   updateAvatarPreview();
   showScreen('profile');
 };
@@ -341,9 +570,10 @@ document.getElementById('copy-my-id-btn').onclick = () => {
 };
 
 function openLobby() {
-  document.getElementById('lobby-avatar').src = currentUser.avatar;
+  document.getElementById('lobby-avatar').src = getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name);
   document.getElementById('lobby-username').textContent = currentUser.name;
   document.getElementById('lobby-user-id').textContent = getMyUserId();
+  renderFriendRequests();
   renderFriends();
   showScreen('lobby');
 }
@@ -408,15 +638,19 @@ function clearRoomTimers() {
   }
 }
 
+function buildMePayload(myPeerId) {
+  return {
+    peerId: myPeerId,
+    userId: currentUser.id,
+    name: currentUser.name,
+    avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name)
+  };
+}
+
 function connectGuestToHost(roomId) {
   if (!peer || peer.destroyed || !currentUser) return;
   const hostPeerId = `${PEER_PREFIX}${roomId}`;
-  const me = {
-    peerId: peer.id,
-    userId: currentUser.id,
-    name: currentUser.name,
-    avatar: currentUser.avatar
-  };
+  const me = buildMePayload(peer.id);
 
   try {
     if (hostConn && hostConn.open) return;
@@ -515,12 +749,7 @@ function startRoom(roomId, createAsHost) {
 
   peer.on('open', (myPeerId) => {
     setConnStatus('● онлайн', 'ok');
-    const me = {
-      peerId: myPeerId,
-      userId: currentUser.id,
-      name: currentUser.name,
-      avatar: currentUser.avatar
-    };
+    const me = buildMePayload(myPeerId);
 
     if (createAsHost) {
       roomState.hostPeerId = myPeerId;
@@ -546,19 +775,55 @@ function startRoom(roomId, createAsHost) {
   });
 
   peer.on('connection', (conn) => {
-    if (!isHost()) return;
-
     conn.on('open', () => {
-      connections.set(conn.peer, conn);
-      conn.send({ type: 'state', state: roomState });
+      if (isHost()) {
+        connections.set(conn.peer, conn);
+        conn.send({ type: 'state', state: roomState });
+      }
     });
 
     conn.on('data', (msg) => {
-      if (msg?.type === 'ping' || msg?.type === 'pong') return;
-      handleMessageAtHost(conn.peer, msg);
+      if (!msg || msg.type === 'ping' || msg.type === 'pong') return;
+      if (msg.type === 'friend-request') {
+        if (isHost() && (msg.toUserId || msg.toPeerId)) {
+          const target = roomState.users.find(u =>
+            (msg.toUserId && u.userId === msg.toUserId) ||
+            (msg.toPeerId && u.peerId === msg.toPeerId)
+          );
+          if (target && target.peerId === peer.id) {
+            handleIncomingFriendRequest(msg);
+          } else if (target && target.peerId && target.peerId !== conn.peer) {
+            sendDirectPeerMessage(target.peerId, msg);
+          }
+        } else {
+          handleIncomingFriendRequest(msg);
+        }
+        return;
+      }
+      if (msg.type === 'friend-accept') {
+        if (isHost() && (msg.toUserId || msg.toPeerId)) {
+          const target = roomState.users.find(u =>
+            (msg.toUserId && u.userId === msg.toUserId) ||
+            (msg.toPeerId && u.peerId === msg.toPeerId)
+          );
+          if (target && target.peerId === peer.id) {
+            upsertFriendRecord({ ...msg.from, lastRoom: msg.from.roomId || roomState.id || '' });
+          } else if (target && target.peerId && target.peerId !== conn.peer) {
+            sendDirectPeerMessage(target.peerId, msg);
+          }
+        } else {
+          upsertFriendRecord({ ...msg.from, lastRoom: msg.from.roomId || roomState.id || '' });
+        }
+        return;
+      }
+
+      if (isHost()) {
+        handleMessageAtHost(conn.peer, msg);
+      }
     });
 
     conn.on('close', () => {
+      if (!isHost()) return;
       connections.delete(conn.peer);
       const removed = roomState.users.find(u => u.peerId === conn.peer);
       roomState.users = roomState.users.filter(u => u.peerId !== conn.peer);
@@ -601,21 +866,30 @@ function getSenderMeta() {
     peerId: myPeerId,
     userId: currentUser.id,
     name: currentUser.name,
-    avatar: currentUser.avatar,
+    avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name),
     isHost: Boolean(isHost())
   };
 }
 
 function handleMessageAtHost(fromPeerId, msg) {
   if (msg.type === 'join') {
-    const exists = roomState.users.some(u => u.peerId === msg.user.peerId);
-    if (!exists) roomState.users.push(msg.user);
-    addSystemMessage(`${msg.user.name} вошёл в комнату`);
+    const cleanUser = {
+      ...msg.user,
+      avatar: getValidAvatar(msg.user.avatar, msg.user.name || msg.user.userId)
+    };
+    const idx = roomState.users.findIndex(u => u.peerId === cleanUser.peerId);
+    if (idx >= 0) {
+      roomState.users[idx] = cleanUser;
+    } else {
+      roomState.users.push(cleanUser);
+      addSystemMessage(`${cleanUser.name} вошёл в комнату`);
+    }
     broadcastState();
     updateUI();
   } else if (msg.type === 'chat') {
     const senderObj = {
       ...msg.sender,
+      avatar: getValidAvatar(msg.sender?.avatar, msg.sender?.name || msg.sender?.userId),
       isHost: msg.sender?.peerId === roomState.hostPeerId
     };
     const payload = { type: 'chat', sender: senderObj, text: msg.text };
@@ -651,6 +925,14 @@ function handleMessageFromHost(msg) {
     appendChatMessage(msg.sender, msg.text);
   } else if (msg.type === 'system') {
     addSystemMessage(msg.text);
+  } else if (msg.type === 'friend-request') {
+    if (!msg.toUserId || msg.toUserId === currentUser?.id || msg.toPeerId === peer?.id) {
+      handleIncomingFriendRequest(msg);
+    }
+  } else if (msg.type === 'friend-accept') {
+    if (!msg.toUserId || msg.toUserId === currentUser?.id || msg.toPeerId === peer?.id) {
+      upsertFriendRecord({ ...msg.from, lastRoom: msg.from.roomId || roomState.id || '' });
+    }
   }
 }
 
@@ -959,7 +1241,7 @@ function renderUsers() {
     peerId: peer?.id || 'local',
     userId: currentUser?.id || '',
     name: currentUser?.name || 'Участник',
-    avatar: currentUser?.avatar || getGeneratedAvatarUrl('Guest')
+    avatar: getValidAvatar(currentUser?.avatar, currentUser?.seed || currentUser?.name)
   }];
 
   usersToRender.forEach(u => {
@@ -971,7 +1253,7 @@ function renderUsers() {
     const isSelf = (peer && u.peerId === peer.id) || (currentUser && u.userId === currentUser.id);
 
     const img = document.createElement('img');
-    img.src = u.avatar;
+    img.src = getValidAvatar(u.avatar, u.name || u.userId);
 
     const nameSpan = document.createElement('span');
     nameSpan.className = 'name';
@@ -988,10 +1270,11 @@ function renderUsers() {
       const friendBtn = document.createElement('button');
       friendBtn.type = 'button';
       const alreadyFriend = isFriend(u);
-      friendBtn.className = `friend-add-btn ${alreadyFriend ? 'added' : ''}`;
-      friendBtn.textContent = alreadyFriend ? '✓ Друг' : '+ Друг';
-      friendBtn.disabled = alreadyFriend;
-      friendBtn.onclick = () => addFriend(u);
+      const isPending = !alreadyFriend && hasOutgoingRequest(u);
+      friendBtn.className = `friend-add-btn ${alreadyFriend ? 'added' : (isPending ? 'pending' : '')}`;
+      friendBtn.textContent = alreadyFriend ? '✓ Друг' : (isPending ? '⏳ Заявка' : '+ В друзья');
+      friendBtn.disabled = alreadyFriend || isPending;
+      friendBtn.onclick = () => sendFriendRequest(u);
       actions.appendChild(friendBtn);
     }
 
@@ -1194,12 +1477,12 @@ function appendChatMessage(sender, text) {
   div.className = 'msg';
 
   const senderObj = typeof sender === 'string'
-    ? { name: sender, avatar: currentUser.avatar, isHost: Boolean(isHost()) }
+    ? { name: sender, avatar: currentUser?.avatar, isHost: Boolean(isHost()) }
     : sender;
 
   const img = document.createElement('img');
   img.className = 'msg-avatar';
-  img.src = senderObj.avatar || currentUser.avatar;
+  img.src = getValidAvatar(senderObj.avatar, senderObj.name || senderObj.userId);
   img.alt = senderObj.name || '';
 
   const body = document.createElement('div');
@@ -1251,6 +1534,7 @@ document.getElementById('chat-form').onsubmit = (e) => {
 const inviteRoomFromUrl = new URLSearchParams(window.location.search).get('room');
 
 if (currentUser && currentUser.name) {
+  currentUser.avatar = getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name);
   if (inviteRoomFromUrl) {
     startRoom(inviteRoomFromUrl.toUpperCase(), false);
   } else {

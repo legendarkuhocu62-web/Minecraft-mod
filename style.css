@@ -1,4 +1,3 @@
-
 :root {
   --bg: #0f1115;
   --surface: #181b22;
@@ -53,10 +52,19 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
   display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;
   background: var(--bg); padding: 0.3rem; border-radius: 12px; border: 1px solid var(--border);
 }
-.tab-btn { background: transparent; color: var(--muted); padding: 0.55rem 0.75rem; font-size: 0.88rem; }
+.tab-btn { position: relative; background: transparent; color: var(--muted); padding: 0.55rem 0.75rem; font-size: 0.88rem; }
 .tab-btn.active { background: var(--primary); color: #fff; }
 .tab-panel { display: none; flex-direction: column; gap: 0.9rem; }
 .tab-panel.active { display: flex; }
+
+.req-badge {
+  background: #ef4444; color: #fff; font-size: 0.7rem;
+  padding: 0.1rem 0.42rem; border-radius: 999px; margin-left: 0.25rem;
+}
+.friend-requests-box { display: flex; flex-direction: column; gap: 0.45rem; text-align: left; }
+.friend-requests-box h4, #lobby-tab-friends > h4 {
+  font-size: 0.78rem; color: var(--muted); text-transform: uppercase; text-align: left;
+}
 
 .add-friend-box { display: flex; gap: 0.5rem; }
 .friends-list {
@@ -173,7 +181,6 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 }
 .browser-container.expanded iframe { height: 100vh; min-height: 100vh; }
 
-/* Рамка кадрирования с уголками */
 .crop-overlay {
   position: absolute; inset: 0; z-index: 25;
   pointer-events: none;
@@ -275,6 +282,7 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 .control-btn.active-ctrl { background: var(--green); color: #052e16; }
 .friend-add-btn { padding: 0.25rem 0.48rem; font-size: 0.74rem; background: rgba(99, 102, 241, 0.2); color: #a5b4fc; }
 .friend-add-btn.added { background: rgba(16, 185, 129, 0.2); color: var(--green); }
+.friend-add-btn.pending { background: rgba(245, 158, 11, 0.2); color: var(--gold); }
 
 .chat-section { flex: 1; display: flex; flex-direction: column; border-bottom: none; overflow: hidden; }
 .chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 0.75rem; font-size: 0.88rem; }
@@ -299,3 +307,4 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
   .workspace:not(.video-focus) .sidebar { width: 100%; border-left: none; border-top: 1px solid var(--border); min-height: 360px; }
   .browser-connect input { width: 100%; }
 }
+

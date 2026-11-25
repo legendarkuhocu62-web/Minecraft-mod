@@ -73,7 +73,10 @@
 
       <div class="lobby-tabs">
         <button type="button" id="tab-room-btn" class="tab-btn active">Комната</button>
-        <button type="button" id="tab-friends-btn" class="tab-btn">Друзья (<span id="friends-count">0</span>)</button>
+        <button type="button" id="tab-friends-btn" class="tab-btn">
+          Друзья (<span id="friends-count">0</span>)
+          <span id="friend-req-badge" class="req-badge hidden">0</span>
+        </button>
       </div>
 
       <div id="lobby-tab-room" class="tab-panel active">
@@ -89,10 +92,17 @@
       </div>
 
       <div id="lobby-tab-friends" class="tab-panel">
-        <div class="add-friend-box">
-          <input type="text" id="friend-name-input" placeholder="Ник или ID друга..." maxlength="40">
-          <button type="button" id="add-friend-manual-btn" class="btn-primary btn-small">+ Добавить</button>
+        <div class="friend-requests-box">
+          <h4>Предложения в друзья (<span id="requests-count">0</span>)</h4>
+          <ul id="friend-requests-list" class="friends-list"></ul>
         </div>
+
+        <div class="add-friend-box">
+          <input type="text" id="friend-name-input" placeholder="ID друга (u_...) или ник..." maxlength="40">
+          <button type="button" id="add-friend-manual-btn" class="btn-primary btn-small">Отправить</button>
+        </div>
+
+        <h4>Мои друзья</h4>
         <ul id="friends-list" class="friends-list"></ul>
       </div>
     </div>
