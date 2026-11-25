@@ -58,23 +58,38 @@
     </div>
   </div>
 
-  <!-- ЭКРАН 2: ЛОББИ -->
+  <!-- ЭКРАН 2: ГЛАВНОЕ МЕНЮ / ЛОББИ -->
   <div id="lobby-screen" class="screen">
-    <div class="card">
+    <div class="card lobby-card">
       <div class="user-badge">
         <img id="lobby-avatar" src="" alt="">
         <span id="lobby-username"></span>
         <button id="edit-profile-btn" class="btn-link">Изменить</button>
       </div>
 
-      <h2>Комната просмотра</h2>
-      <button id="create-room-btn" class="btn-primary">Создать комнату (Я Главный)</button>
+      <div class="lobby-tabs">
+        <button type="button" id="tab-room-btn" class="tab-btn active">Комната</button>
+        <button type="button" id="tab-friends-btn" class="tab-btn">Друзья (<span id="friends-count">0</span>)</button>
+      </div>
 
-      <div class="divider">или войти по коду</div>
+      <div id="lobby-tab-room" class="tab-panel active">
+        <h2>Комната просмотра</h2>
+        <button id="create-room-btn" class="btn-primary">Создать комнату (Я Главный)</button>
 
-      <div class="join-row">
-        <input type="text" id="room-code-input" placeholder="Код комнаты...">
-        <button id="join-room-btn" class="btn-secondary">Войти</button>
+        <div class="divider">или войти по коду</div>
+
+        <div class="join-row">
+          <input type="text" id="room-code-input" placeholder="Код комнаты...">
+          <button id="join-room-btn" class="btn-secondary">Войти</button>
+        </div>
+      </div>
+
+      <div id="lobby-tab-friends" class="tab-panel">
+        <div class="add-friend-box">
+          <input type="text" id="friend-name-input" placeholder="Имя друга или ID..." maxlength="24">
+          <button type="button" id="add-friend-manual-btn" class="btn-primary btn-small">+ Добавить</button>
+        </div>
+        <ul id="friends-list" class="friends-list"></ul>
       </div>
     </div>
   </div>
@@ -83,8 +98,10 @@
   <div id="room-screen" class="screen">
     <header class="topbar">
       <div class="room-info">
+        <button type="button" id="exit-to-menu-btn" class="btn-small btn-secondary">← Меню</button>
         <span class="badge-host" id="role-badge">👑 Вы Главный</span>
         <span>Комната: <strong id="current-room-id"></strong></span>
+        <span id="conn-status" class="conn-status">● онлайн</span>
         <button id="copy-invite-btn" class="btn-small btn-secondary">Копировать ссылку</button>
 
         <div class="ru-mode-box">
@@ -93,7 +110,7 @@
         </div>
 
         <div id="site-view-actions" class="site-view-actions hidden">
-          <button type="button" id="video-focus-btn" class="btn-small btn-primary">🎬 Фокус на видео</button>
+          <button type="button" id="video-focus-btn" class="btn-small btn-primary">🎬 Рамка кадра</button>
           <button type="button" id="expand-browser-btn" class="btn-small btn-secondary">⛶ На весь экран</button>
         </div>
       </div>
@@ -110,23 +127,10 @@
         <button type="button" id="exit-expand-btn" class="exit-expand-btn hidden">✕ Свернуть</button>
 
         <div id="focus-header-strip" class="focus-header-strip hidden">
-          <span class="focus-title">Кадр подровнен как скриншот</span>
+          <span class="focus-title">Потяни рамку за углы или края</span>
           <div class="focus-strip-btns">
-            <button type="button" id="toggle-sliders-btn" class="btn-small btn-secondary">⚙ Настроить кадр</button>
-            <button type="button" id="reset-crop-btn" class="btn-small btn-secondary">Сброс</button>
+            <button type="button" id="reset-crop-btn" class="btn-small btn-secondary">Сброс рамки</button>
           </div>
-        </div>
-
-        <div id="video-crop-bar" class="video-crop-bar hidden">
-          <label>Масштаб: <span id="vf-zoom-val">120%</span>
-            <input type="range" id="vf-zoom" min="100" max="240" value="120">
-          </label>
-          <label>Влево / вправо: <span id="vf-x-val">0px</span>
-            <input type="range" id="vf-x" min="-220" max="220" value="0">
-          </label>
-          <label>Вверх / вниз: <span id="vf-y-val">-40px</span>
-            <input type="range" id="vf-y" min="-260" max="260" value="-40">
-          </label>
         </div>
 
         <div id="google-launcher" class="google-launcher">
@@ -141,6 +145,19 @@
 
         <div id="iframe-crop-wrap" class="iframe-crop-wrap">
           <iframe id="virtual-browser-frame" class="hidden" allow="autoplay; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
+
+          <div id="crop-overlay" class="crop-overlay hidden">
+            <div id="crop-box" class="crop-box">
+              <span class="crop-corner tl" data-handle="tl"></span>
+              <span class="crop-corner tr" data-handle="tr"></span>
+              <span class="crop-corner bl" data-handle="bl"></span>
+              <span class="crop-corner br" data-handle="br"></span>
+              <span class="crop-edge t" data-handle="t"></span>
+              <span class="crop-edge b" data-handle="b"></span>
+              <span class="crop-edge l" data-handle="l"></span>
+              <span class="crop-edge r" data-handle="r"></span>
+            </div>
+          </div>
         </div>
 
         <div id="viewer-shield" class="viewer-shield hidden" title="Управление сейчас у другого участника"></div>

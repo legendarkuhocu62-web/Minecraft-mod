@@ -1,16 +1,18 @@
-
 const PEER_PREFIX = 'cobrowser_v1_';
 const RU_PROXY_PREFIX = '';
 
 let currentUser = JSON.parse(localStorage.getItem('cobrowser_user')) || null;
+let friendsList = JSON.parse(localStorage.getItem('cobrowser_friends')) || [];
 let avatarSeed = currentUser?.seed || Math.random().toString(36).substring(7);
 let pendingAvatarDataUrl = currentUser?.avatar || null;
 
 let peer = null;
 let connections = new Map();
 let hostConn = null;
-
-let slidersOpen = true;
+let heartbeatTimer = null;
+let reconnectTimer = null;
+let activeRoomId = null;
+let activeCreateAsHost = false;
 
 let roomState = {
   id: null,
@@ -18,9 +20,7 @@ let roomState = {
   controllerPeerId: null,
   ruMode: false,
   videoFocus: false,
-  vfZoom: 120,
-  vfX: 0,
-  vfY: -40,
+  cropRect: { left: 4, top: 12, width: 92, height: 68 },
   mode: 'search', // 'search' | 'frame'
   query: '',
   browserUrl: '',
@@ -32,6 +32,16 @@ const screens = {
   lobby: document.getElementById('lobby-screen'),
   room: document.getElementById('room-screen')
 };
+
+const connStatusEl = document.getElementById('conn-status');
+
+function setConnStatus(text, mode = 'ok') {
+  if (!connStatusEl) return;
+  connStatusEl.textContent = text;
+  connStatusEl.classList.remove('warn', 'err');
+  if (mode === 'warn') connStatusEl.classList.add('warn');
+  if (mode === 'err') connStatusEl.classList.add('err');
+}
 
 function showScreen(name) {
   Object.values(screens).forEach(s => s.classList.remove('active'));
@@ -46,6 +56,125 @@ function hasControl() {
   return peer && roomState.controllerPeerId === peer.id;
 }
 
+// --- ДРУЗЬЯ ---
+function saveFriends() {
+  localStorage.setItem('cobrowser_friends', JSON.stringify(friendsList));
+  renderFriends();
+  renderUsers();
+}
+
+function isFriend(userObj) {
+  if (!userObj) return false;
+  return friendsList.some(f =>
+    (userObj.peerId && f.peerId === userObj.peerId) ||
+    (userObj.name && f.name.toLowerCase() === userObj.name.toLowerCase())
+  );
+}
+
+function addFriend(userObj) {
+  if (!userObj || !userObj.name) return;
+  if (userObj.peerId && peer && userObj.peerId === peer.id) return;
+  if (isFriend(userObj)) return;
+
+  friendsList.push({
+    peerId: userObj.peerId || '',
+    name: userObj.name.trim(),
+    avatar: userObj.avatar || getGeneratedAvatarUrl(userObj.name),
+    lastRoom: roomState.id || ''
+  });
+  saveFriends();
+}
+
+function removeFriend(index) {
+  friendsList.splice(index, 1);
+  saveFriends();
+}
+
+function renderFriends() {
+  const listEl = document.getElementById('friends-list');
+  const countEl = document.getElementById('friends-count');
+  if (!listEl || !countEl) return;
+
+  countEl.textContent = friendsList.length;
+  listEl.innerHTML = '';
+
+  if (!friendsList.length) {
+    listEl.innerHTML = '<li class="friend-sub" style="padding:0.5rem">Список друзей пока пуст. Добавляй участников из комнаты или впиши имя выше.</li>';
+    return;
+  }
+
+  friendsList.forEach((f, idx) => {
+    const li = document.createElement('li');
+    li.className = 'friend-item';
+
+    const img = document.createElement('img');
+    img.src = f.avatar || getGeneratedAvatarUrl(f.name);
+    img.alt = f.name;
+
+    const meta = document.createElement('div');
+    meta.className = 'friend-meta';
+
+    const nameDiv = document.createElement('div');
+    nameDiv.className = 'friend-name';
+    nameDiv.textContent = f.name;
+
+    const subDiv = document.createElement('div');
+    subDiv.className = 'friend-sub';
+    subDiv.textContent = f.lastRoom ? `Последняя комната: ${f.lastRoom}` : 'В списке друзей';
+
+    meta.appendChild(nameDiv);
+    meta.appendChild(subDiv);
+
+    const actions = document.createElement('div');
+    actions.className = 'friend-actions';
+
+    if (f.lastRoom) {
+      const joinBtn = document.createElement('button');
+      joinBtn.type = 'button';
+      joinBtn.className = 'btn-primary btn-small';
+      joinBtn.textContent = 'Войти';
+      joinBtn.onclick = () => startRoom(f.lastRoom.toUpperCase(), false);
+      actions.appendChild(joinBtn);
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'btn-secondary btn-small';
+    delBtn.textContent = '✕';
+    delBtn.title = 'Удалить из друзей';
+    delBtn.onclick = () => removeFriend(idx);
+    actions.appendChild(delBtn);
+
+    li.appendChild(img);
+    li.appendChild(meta);
+    li.appendChild(actions);
+    listEl.appendChild(li);
+  });
+}
+
+document.getElementById('tab-room-btn').onclick = () => {
+  document.getElementById('tab-room-btn').classList.add('active');
+  document.getElementById('tab-friends-btn').classList.remove('active');
+  document.getElementById('lobby-tab-room').classList.add('active');
+  document.getElementById('lobby-tab-friends').classList.remove('active');
+};
+
+document.getElementById('tab-friends-btn').onclick = () => {
+  document.getElementById('tab-friends-btn').classList.add('active');
+  document.getElementById('tab-room-btn').classList.remove('active');
+  document.getElementById('lobby-tab-friends').classList.add('active');
+  document.getElementById('lobby-tab-room').classList.remove('active');
+  renderFriends();
+};
+
+document.getElementById('add-friend-manual-btn').onclick = () => {
+  const input = document.getElementById('friend-name-input');
+  const val = input.value.trim();
+  if (!val) return;
+  addFriend({ name: val });
+  input.value = '';
+};
+
 // --- 1. ПРОФИЛЬ И ОБРЕЗКА АВАТАРКИ В КРУЖОЧЕК ---
 const avatarImg = document.getElementById('avatar-img');
 const usernameInput = document.getElementById('username-input');
@@ -58,7 +187,7 @@ const cropY = document.getElementById('crop-y');
 const cropZoomVal = document.getElementById('crop-zoom-val');
 
 function getGeneratedAvatarUrl(seed) {
-  return `https://api.dicebear.com/7.x/bottts/svg?seed=${seed}`;
+  return `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(seed || 'Guest')}`;
 }
 
 function updateAvatarPreview() {
@@ -179,6 +308,7 @@ document.getElementById('edit-profile-btn').onclick = () => {
 function openLobby() {
   document.getElementById('lobby-avatar').src = currentUser.avatar;
   document.getElementById('lobby-username').textContent = currentUser.name;
+  renderFriends();
 
   const urlParams = new URLSearchParams(window.location.search);
   const inviteRoom = urlParams.get('room');
@@ -189,7 +319,46 @@ function openLobby() {
   }
 }
 
-// --- 2. КОМНАТЫ И ПРАВА "КТО ГЛАВНЫЙ" ---
+// --- ВЫХОД В ГЛАВНОЕ МЕНЮ ---
+function exitToMainMenu() {
+  clearRoomTimers();
+  if (peer) {
+    try { peer.destroy(); } catch (_) {}
+    peer = null;
+  }
+  connections.clear();
+  hostConn = null;
+  activeRoomId = null;
+  activeCreateAsHost = false;
+
+  roomState = {
+    id: null,
+    hostPeerId: null,
+    controllerPeerId: null,
+    ruMode: false,
+    videoFocus: false,
+    cropRect: { left: 4, top: 12, width: 92, height: 68 },
+    mode: 'search',
+    query: '',
+    browserUrl: '',
+    users: []
+  };
+
+  window.history.pushState({}, '', window.location.pathname);
+  document.getElementById('chat-messages').innerHTML = '';
+  document.getElementById('virtual-browser-frame').src = '';
+  document.getElementById('virtual-browser-frame').classList.add('hidden');
+  document.getElementById('google-launcher').classList.remove('hidden');
+
+  document.getElementById('lobby-avatar').src = currentUser.avatar;
+  document.getElementById('lobby-username').textContent = currentUser.name;
+  renderFriends();
+  showScreen('lobby');
+}
+
+document.getElementById('exit-to-menu-btn').onclick = exitToMainMenu;
+
+// --- 2. КОМНАТЫ, АВТОПЕРЕПОДКЛЮЧЕНИЕ И ПРАВА "КТО ГЛАВНЫЙ" ---
 document.getElementById('create-room-btn').onclick = () => {
   const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
   startRoom(roomId, true);
@@ -201,21 +370,119 @@ document.getElementById('join-room-btn').onclick = () => {
   startRoom(code, false);
 };
 
+function clearRoomTimers() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function connectGuestToHost(roomId) {
+  if (!peer || peer.destroyed || !currentUser) return;
+  const hostPeerId = `${PEER_PREFIX}${roomId}`;
+  const me = { peerId: peer.id, name: currentUser.name, avatar: currentUser.avatar };
+
+  try {
+    if (hostConn && hostConn.open) return;
+    hostConn = peer.connect(hostPeerId, { reliable: true });
+    setConnStatus('● подключение...', 'warn');
+
+    hostConn.on('open', () => {
+      setConnStatus('● онлайн', 'ok');
+      hostConn.send({ type: 'join', user: me });
+      addSystemMessage(`Подключились к комнате ${roomId}`);
+    });
+
+    hostConn.on('data', (msg) => {
+      if (msg?.type === 'ping') {
+        if (hostConn.open) hostConn.send({ type: 'pong' });
+        return;
+      }
+      handleMessageFromHost(msg);
+    });
+
+    hostConn.on('close', () => {
+      setConnStatus('● переподключение...', 'warn');
+      scheduleGuestReconnect(roomId);
+    });
+
+    hostConn.on('error', () => {
+      setConnStatus('● ошибка связи', 'err');
+      scheduleGuestReconnect(roomId);
+    });
+  } catch (e) {
+    scheduleGuestReconnect(roomId);
+  }
+}
+
+function scheduleGuestReconnect(roomId) {
+  if (reconnectTimer || activeCreateAsHost || !activeRoomId) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (peer && !peer.destroyed && peer.disconnected) {
+      try { peer.reconnect(); } catch (_) {}
+    }
+    connectGuestToHost(roomId);
+  }, 2500);
+}
+
+function startHeartbeat() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(() => {
+    if (!peer || peer.destroyed) return;
+    if (peer.disconnected) {
+      setConnStatus('● переподключение...', 'warn');
+      try { peer.reconnect(); } catch (_) {}
+    }
+    if (isHost()) {
+      connections.forEach((conn) => {
+        if (conn.open) {
+          try { conn.send({ type: 'ping' }); } catch (_) {}
+        }
+      });
+    } else if (hostConn) {
+      if (hostConn.open) {
+        try { hostConn.send({ type: 'ping' }); } catch (_) {}
+      } else {
+        connectGuestToHost(activeRoomId);
+      }
+    }
+  }, 8000);
+}
+
 function startRoom(roomId, createAsHost) {
-  if (peer) peer.destroy();
+  clearRoomTimers();
+  if (peer) {
+    try { peer.destroy(); } catch (_) {}
+  }
   connections.clear();
   hostConn = null;
+  activeRoomId = roomId;
+  activeCreateAsHost = createAsHost;
 
   roomState.id = roomId;
   const newUrl = `${window.location.pathname}?room=${roomId}`;
   window.history.pushState({}, '', newUrl);
   document.getElementById('current-room-id').textContent = roomId;
+  setConnStatus('● подключение...', 'warn');
   showScreen('room');
 
   const desiredId = createAsHost ? `${PEER_PREFIX}${roomId}` : undefined;
-  peer = new Peer(desiredId);
+  peer = new Peer(desiredId, {
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    }
+  });
 
   peer.on('open', (myPeerId) => {
+    setConnStatus('● онлайн', 'ok');
     const me = { peerId: myPeerId, name: currentUser.name, avatar: currentUser.avatar };
 
     if (createAsHost) {
@@ -225,16 +492,19 @@ function startRoom(roomId, createAsHost) {
       updateUI();
       addSystemMessage('Комната создана. Вы — Главный (👑).');
     } else {
-      const hostPeerId = `${PEER_PREFIX}${roomId}`;
-      hostConn = peer.connect(hostPeerId);
+      connectGuestToHost(roomId);
+    }
+    startHeartbeat();
+  });
 
-      hostConn.on('open', () => {
-        hostConn.send({ type: 'join', user: me });
-        addSystemMessage(`Подключились к комнате ${roomId}`);
-      });
-
-      hostConn.on('data', (msg) => handleMessageFromHost(msg));
-      hostConn.on('close', () => addSystemMessage('Связь с Главным разорвана'));
+  peer.on('disconnected', () => {
+    setConnStatus('● переподключение...', 'warn');
+    if (peer && !peer.destroyed) {
+      setTimeout(() => {
+        if (peer && !peer.destroyed && peer.disconnected) {
+          try { peer.reconnect(); } catch (_) {}
+        }
+      }, 1500);
     }
   });
 
@@ -243,9 +513,13 @@ function startRoom(roomId, createAsHost) {
 
     conn.on('open', () => {
       connections.set(conn.peer, conn);
+      conn.send({ type: 'state', state: roomState });
     });
 
-    conn.on('data', (msg) => handleMessageAtHost(conn.peer, msg));
+    conn.on('data', (msg) => {
+      if (msg?.type === 'ping' || msg?.type === 'pong') return;
+      handleMessageAtHost(conn.peer, msg);
+    });
 
     conn.on('close', () => {
       connections.delete(conn.peer);
@@ -262,15 +536,27 @@ function startRoom(roomId, createAsHost) {
 
   peer.on('error', (err) => {
     if (err.type === 'unavailable-id') {
-      alert('Комната с таким кодом уже существует, входим как участник...');
       startRoom(roomId, false);
     } else if (err.type === 'peer-unavailable') {
-      alert('Комната не найдена или Главный ещё не в сети.');
+      setConnStatus('● ждём хоста...', 'warn');
+      if (!createAsHost) scheduleGuestReconnect(roomId);
     } else {
+      setConnStatus('● сбой сети', 'err');
       console.error(err);
     }
   });
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && peer && !peer.destroyed && activeRoomId) {
+    if (peer.disconnected) {
+      try { peer.reconnect(); } catch (_) {}
+    }
+    if (!activeCreateAsHost && (!hostConn || !hostConn.open)) {
+      connectGuestToHost(activeRoomId);
+    }
+  }
+});
 
 function getSenderMeta() {
   const myPeerId = peer?.id || 'local';
@@ -329,7 +615,9 @@ function handleMessageFromHost(msg) {
 
 function broadcastRaw(payload) {
   connections.forEach(conn => {
-    if (conn.open) conn.send(payload);
+    if (conn.open) {
+      try { conn.send(payload); } catch (_) {}
+    }
   });
 }
 
@@ -388,7 +676,7 @@ function updateRuModeUI() {
     : 'Введите запрос для поиска в Google или адрес сайта';
 }
 
-// --- ПОДРАВНИВАНИЕ КАДРА КАК НА АВАТАРКЕ (МАСШТАБ + СДВИГ X/Y) ---
+// --- РАМКА КАДРИРОВАНИЯ С УГОЛКАМИ ---
 const workspaceEl = document.getElementById('workspace');
 const browserBox = document.getElementById('browser-container');
 const siteViewActions = document.getElementById('site-view-actions');
@@ -396,16 +684,10 @@ const videoFocusBtn = document.getElementById('video-focus-btn');
 const expandBrowserBtn = document.getElementById('expand-browser-btn');
 const exitExpandBtn = document.getElementById('exit-expand-btn');
 const focusHeaderStrip = document.getElementById('focus-header-strip');
-const toggleSlidersBtn = document.getElementById('toggle-sliders-btn');
-const videoCropBar = document.getElementById('video-crop-bar');
+const cropOverlay = document.getElementById('crop-overlay');
+const cropBox = document.getElementById('crop-box');
 
-const vfZoomInput = document.getElementById('vf-zoom');
-const vfXInput = document.getElementById('vf-x');
-const vfYInput = document.getElementById('vf-y');
-
-const vfZoomVal = document.getElementById('vf-zoom-val');
-const vfXVal = document.getElementById('vf-x-val');
-const vfYVal = document.getElementById('vf-y-val');
+const DEFAULT_CROP = { left: 4, top: 12, width: 92, height: 68 };
 
 function isSiteOpened() {
   return roomState.mode === 'frame' && Boolean(roomState.browserUrl);
@@ -426,35 +708,75 @@ function syncVideoFocusPayload(patch) {
 
 videoFocusBtn.onclick = () => {
   if (!isSiteOpened()) return;
-  const nextFocus = !roomState.videoFocus;
-  if (nextFocus) slidersOpen = true;
-  syncVideoFocusPayload({ videoFocus: nextFocus });
-};
-
-toggleSlidersBtn.onclick = () => {
-  slidersOpen = !slidersOpen;
-  applyVideoFocusUI();
-};
-
-vfZoomInput.oninput = () => {
-  syncVideoFocusPayload({ vfZoom: Number(vfZoomInput.value) });
-};
-
-vfXInput.oninput = () => {
-  syncVideoFocusPayload({ vfX: Number(vfXInput.value) });
-};
-
-vfYInput.oninput = () => {
-  syncVideoFocusPayload({ vfY: Number(vfYInput.value) });
+  syncVideoFocusPayload({
+    videoFocus: !roomState.videoFocus,
+    cropRect: roomState.cropRect || { ...DEFAULT_CROP }
+  });
 };
 
 document.getElementById('reset-crop-btn').onclick = () => {
-  syncVideoFocusPayload({
-    vfZoom: 100,
-    vfX: 0,
-    vfY: 0
-  });
+  syncVideoFocusPayload({ cropRect: { ...DEFAULT_CROP } });
 };
+
+function renderCropBoxStyle() {
+  const rect = roomState.cropRect || DEFAULT_CROP;
+  cropBox.style.left = `${rect.left}%`;
+  cropBox.style.top = `${rect.top}%`;
+  cropBox.style.width = `${rect.width}%`;
+  cropBox.style.height = `${rect.height}%`;
+}
+
+let dragInfo = null;
+
+cropOverlay.addEventListener('pointerdown', (e) => {
+  const handle = e.target.dataset?.handle;
+  if (!handle || !roomState.videoFocus) return;
+  e.preventDefault();
+  const overlayRect = cropOverlay.getBoundingClientRect();
+  dragInfo = {
+    handle,
+    startX: e.clientX,
+    startY: e.clientY,
+    overlayW: overlayRect.width || 1,
+    overlayH: overlayRect.height || 1,
+    startRect: { ...(roomState.cropRect || DEFAULT_CROP) }
+  };
+  e.target.setPointerCapture?.(e.pointerId);
+});
+
+window.addEventListener('pointermove', (e) => {
+  if (!dragInfo) return;
+  const dxPct = ((e.clientX - dragInfo.startX) / dragInfo.overlayW) * 100;
+  const dyPct = ((e.clientY - dragInfo.startY) / dragInfo.overlayH) * 100;
+  let { left, top, width, height } = dragInfo.startRect;
+  const h = dragInfo.handle;
+
+  if (h.includes('l')) {
+    const newLeft = Math.max(0, Math.min(left + width - 15, left + dxPct));
+    width = left + width - newLeft;
+    left = newLeft;
+  }
+  if (h.includes('r')) {
+    width = Math.max(15, Math.min(100 - left, width + dxPct));
+  }
+  if (h.includes('t')) {
+    const newTop = Math.max(0, Math.min(top + height - 15, top + dyPct));
+    height = top + height - newTop;
+    top = newTop;
+  }
+  if (h.includes('b')) {
+    height = Math.max(15, Math.min(100 - top, height + dyPct));
+  }
+
+  roomState.cropRect = { left, top, width, height };
+  renderCropBoxStyle();
+});
+
+window.addEventListener('pointerup', () => {
+  if (!dragInfo) return;
+  dragInfo = null;
+  syncVideoFocusPayload({ cropRect: roomState.cropRect });
+});
 
 function applyVideoFocusUI() {
   const opened = isSiteOpened();
@@ -469,31 +791,12 @@ function applyVideoFocusUI() {
   }
 
   const active = Boolean(roomState.videoFocus) && opened;
-  const zoom = Number(roomState.vfZoom ?? 120);
-  const x = Number(roomState.vfX ?? 0);
-  const y = Number(roomState.vfY ?? -40);
-
-  vfZoomInput.value = zoom;
-  vfXInput.value = x;
-  vfYInput.value = y;
-
-  vfZoomVal.textContent = `${zoom}%`;
-  vfXVal.textContent = `${x}px`;
-  vfYVal.textContent = `${y}px`;
-
   workspaceEl.classList.toggle('video-focus', active);
   videoFocusBtn.classList.toggle('active-focus', active);
-  videoFocusBtn.textContent = active ? '🎬 Обычный вид' : '🎬 Фокус на видео';
-
+  videoFocusBtn.textContent = active ? '🎬 Убрать рамку' : '🎬 Рамка кадра';
   focusHeaderStrip.classList.toggle('hidden', !active);
-  videoCropBar.classList.toggle('hidden', !active || !slidersOpen);
-  toggleSlidersBtn.textContent = slidersOpen ? 'Скрыть ползунки' : '⚙ Настроить кадр';
-
-  if (active) {
-    iframe.style.transform = `translate(${x}px, ${y}px) scale(${zoom / 100})`;
-  } else {
-    iframe.style.transform = 'none';
-  }
+  cropOverlay.classList.toggle('hidden', !active);
+  renderCropBoxStyle();
 }
 
 expandBrowserBtn.onclick = () => {
@@ -522,7 +825,7 @@ function updateUI() {
 
   browserControls.style.display = (isHost() || hasControl()) ? 'flex' : 'none';
 
-  if (hasControl()) {
+  if (hasControl() || roomState.videoFocus) {
     shield.classList.add('hidden');
   } else {
     shield.classList.remove('hidden');
@@ -551,6 +854,7 @@ function renderUsers() {
 
     const isUserHost = u.peerId === roomState.hostPeerId;
     const isUserCtrl = u.peerId === roomState.controllerPeerId;
+    const isSelf = peer && u.peerId === peer.id;
 
     const img = document.createElement('img');
     img.src = u.avatar;
@@ -562,8 +866,23 @@ function renderUsers() {
     li.appendChild(img);
     li.appendChild(nameSpan);
 
+    const actions = document.createElement('div');
+    actions.className = 'user-actions';
+
+    if (!isSelf) {
+      const friendBtn = document.createElement('button');
+      friendBtn.type = 'button';
+      const alreadyFriend = isFriend(u);
+      friendBtn.className = `friend-add-btn ${alreadyFriend ? 'added' : ''}`;
+      friendBtn.textContent = alreadyFriend ? '✓ Друг' : '+ Друг';
+      friendBtn.disabled = alreadyFriend;
+      friendBtn.onclick = () => addFriend(u);
+      actions.appendChild(friendBtn);
+    }
+
     if (isHost()) {
       const btn = document.createElement('button');
+      btn.type = 'button';
       btn.className = `control-btn ${isUserCtrl ? 'active-ctrl' : ''}`;
       if (isUserCtrl && u.peerId !== peer.id) {
         btn.textContent = 'Забрать';
@@ -572,9 +891,10 @@ function renderUsers() {
         btn.textContent = 'Пульт';
         btn.onclick = () => setController(u.peerId);
       }
-      if (btn.textContent) li.appendChild(btn);
+      if (btn.textContent) actions.appendChild(btn);
     }
 
+    if (actions.children.length) li.appendChild(actions);
     list.appendChild(li);
   });
 }
@@ -819,3 +1139,4 @@ if (currentUser) {
   updateAvatarPreview();
   showScreen('profile');
 }
+
