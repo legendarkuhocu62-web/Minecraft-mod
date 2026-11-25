@@ -1680,20 +1680,79 @@ async function cbDeclineRequest(requestId) {
   await cbLoadSocial();
 }
 function cbInstallDmUI() {
-  const panel=document.createElement('div');
-  panel.id='personal-chat-panel';
-  panel.className='personal-chat-panel';
-  panel.innerHTML=`<h3>Личные сообщения</h3><div class="dm-layout"><div id="dm-friends" class="dm-friends"><p class="friend-sub">Добавь друга, чтобы начать переписку</p></div><div class="dm-conversation"><div id="dm-title" class="dm-title">Выбери друга</div><div id="dm-messages" class="dm-messages"></div><form id="dm-form" class="dm-form"><input id="dm-input" maxlength="2000" placeholder="Личное сообщение..." autocomplete="off"><button type="submit">➤</button></form></div></div>`;
-  const friendsPanel=document.getElementById('lobby-tab-friends');
-  if(friendsPanel) friendsPanel.appendChild(panel);
-  const style=document.createElement('style');
-  style.textContent=`#social-status{font-size:.75rem;color:var(--muted);margin-top:.5rem}.personal-chat-panel{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--border,#444)}.dm-layout{display:grid;grid-template-columns:minmax(110px, .7fr) 1.5fr;gap:.7rem;min-height:260px}.dm-friends,.dm-conversation{min-width:0;border:1px solid var(--border,#444);border-radius:10px;padding:.5rem}.dm-friend{display:block;width:100%;text-align:left;margin:.2rem 0;padding:.55rem;border:0;border-radius:7px;background:var(--surface-2,#333);color:inherit;cursor:pointer}.dm-friend.active{outline:2px solid var(--accent,#7c8cff)}.dm-title{font-weight:600;padding:.35rem;border-bottom:1px solid var(--border,#444)}.dm-messages{height:190px;overflow:auto;padding:.5rem}.dm-message{padding:.35rem .5rem;margin:.3rem 0;border-radius:8px;background:var(--surface-2,#333);overflow-wrap:anywhere}.dm-message.mine{margin-left:12%;background:var(--accent-soft,#343b58)}.dm-form{display:flex;gap:.4rem}.dm-form input{min-width:0;flex:1}@media(max-width:600px){.dm-layout{grid-template-columns:1fr}.dm-friends{max-height:110px;overflow:auto}.dm-messages{height:160px}}`;
+  const lobby = document.querySelector('#lobby-screen .lobby-content') || document.querySelector('#lobby-screen .lobby-card') || document.getElementById('lobby-tab-friends').parentElement;
+  const tabBar = document.querySelector('.lobby-tabs');
+  const chatTab = document.createElement('button');
+  chatTab.type = 'button'; chatTab.id = 'tab-chat-btn'; chatTab.className = 'tab-btn';
+  chatTab.textContent = 'Сообщения';
+  tabBar.appendChild(chatTab);
+
+  const panel = document.createElement('div');
+  panel.id = 'lobby-tab-chat'; panel.className = 'tab-panel';
+  panel.innerHTML = `<section class="personal-chat-panel">
+    <div class="dm-heading"><div><h2>Личные сообщения</h2><p>Переписка один на один с друзьями</p></div></div>
+    <div class="dm-layout">
+      <aside class="dm-sidebar"><div class="dm-sidebar-title">Друзья</div><div id="dm-friends" class="dm-friends"><p class="friend-sub">Добавь друга, чтобы начать переписку</p></div></aside>
+      <section class="dm-conversation">
+        <div class="dm-title" id="dm-title"><span class="dm-empty-avatar">✉</span><span>Выбери друга</span></div>
+        <div id="dm-messages" class="dm-messages"><div class="dm-empty">Выбери друга слева, чтобы открыть переписку</div></div>
+        <form id="dm-form" class="dm-form"><input id="dm-input" maxlength="2000" placeholder="Написать сообщение..." autocomplete="off"><button type="submit" aria-label="Отправить">➤</button></form>
+      </section>
+    </div>
+  </section>`;
+  document.getElementById('lobby-tab-friends').after(panel);
+
+  const style = document.createElement('style');
+  style.textContent = `
+  #social-status{font-size:.78rem;color:var(--muted);margin-top:.5rem}
+  .lobby-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));}
+  .lobby-tabs .tab-btn{min-width:0;padding:.75rem .35rem;font-size:.9rem}
+  .personal-chat-panel{margin:0;padding:.2rem 0 .5rem}
+  .dm-heading h2{margin:0 0 .25rem;font-size:1.25rem}.dm-heading p{margin:0 0 1rem;color:var(--muted);font-size:.85rem}
+  .dm-layout{display:grid;grid-template-columns:minmax(130px,.72fr) minmax(0,1.6fr);gap:.75rem;min-height:390px}
+  .dm-sidebar,.dm-conversation{min-width:0;border:1px solid var(--border,#343943);border-radius:15px;background:rgba(10,12,18,.35);overflow:hidden}
+  .dm-sidebar-title{padding:.85rem .9rem;font-weight:700;border-bottom:1px solid var(--border,#343943)}
+  .dm-friends{padding:.45rem;max-height:450px;overflow:auto}
+  .dm-friend{display:flex;align-items:center;gap:.6rem;width:100%;text-align:left;margin:.25rem 0;padding:.65rem .55rem;border:1px solid transparent;border-radius:11px;background:transparent;color:inherit;cursor:pointer}
+  .dm-friend:hover,.dm-friend.active{background:rgba(105,99,255,.15);border-color:var(--accent,#7770ff)}
+  .dm-friend img{width:38px;height:38px;flex:0 0 38px;object-fit:cover;border-radius:50%}
+  .dm-friend-name{font-weight:650;overflow:hidden;text-overflow:ellipsis}
+  .dm-conversation{display:flex;flex-direction:column;min-height:390px}
+  .dm-title{display:flex;align-items:center;gap:.7rem;padding:.75rem .9rem;font-weight:700;border-bottom:1px solid var(--border,#343943);min-height:62px}
+  .dm-title img{width:38px;height:38px;border-radius:50%;object-fit:cover}
+  .dm-messages{flex:1;min-height:240px;max-height:440px;overflow:auto;padding:1rem;display:flex;flex-direction:column;gap:.8rem}
+  .dm-empty{margin:auto;text-align:center;color:var(--muted);font-size:.9rem;padding:1rem}
+  .dm-message-row{display:flex;align-items:flex-end;gap:.5rem;max-width:92%}
+  .dm-message-row.mine{align-self:flex-end;flex-direction:row-reverse}
+  .dm-message-row img{width:30px;height:30px;border-radius:50%;object-fit:cover;flex:0 0 30px}
+  .dm-bubble-wrap{min-width:0}.dm-author{font-size:.72rem;color:var(--muted);margin:0 0 .2rem .2rem}
+  .dm-message{padding:.65rem .85rem;border-radius:14px 14px 14px 4px;background:#292e3b;color:#f4f5fa;overflow-wrap:anywhere;white-space:pre-wrap;line-height:1.4}
+  .dm-message-row.mine .dm-message{background:#5551c9;border-radius:14px 14px 4px 14px}
+  .dm-time{font-size:.65rem;color:var(--muted);margin:.2rem .25rem 0}
+  .dm-form{display:flex;gap:.55rem;padding:.75rem;border-top:1px solid var(--border,#343943)}
+  .dm-form input{flex:1;min-width:0;border-radius:12px;padding:.8rem .9rem}
+  .dm-form button{width:46px;flex:0 0 46px;border:0;border-radius:12px;background:var(--accent,#6862ed);color:white;font-size:1.2rem}
+  @media(max-width:600px){.dm-layout{grid-template-columns:1fr;min-height:0}.dm-sidebar{max-height:150px}.dm-friends{display:flex;gap:.3rem;max-height:100px;overflow-x:auto}.dm-friend{width:auto;min-width:100px;flex-direction:column;gap:.25rem;text-align:center}.dm-conversation{min-height:420px}.dm-messages{min-height:270px;max-height:360px}.lobby-tabs .tab-btn{font-size:.78rem}}
+  `;
   document.head.appendChild(style);
+
+  function showTab(which) {
+    ['room','friends','chat'].forEach(name=>{
+      document.getElementById('lobby-tab-'+name)?.classList.toggle('active',name===which);
+      document.getElementById('tab-'+name+'-btn')?.classList.toggle('active',name===which);
+    });
+    if(which==='chat') cbRenderDmFriends();
+  }
+  document.getElementById('tab-room-btn').onclick=()=>showTab('room');
+  document.getElementById('tab-friends-btn').onclick=()=>{showTab('friends');renderFriendRequests();renderFriends();};
+  chatTab.onclick=()=>showTab('chat');
+
   document.getElementById('dm-form').onsubmit=async e=>{
-    e.preventDefault(); const input=document.getElementById('dm-input'); const body=input.value.trim();
-    if(!body||!cbSelectedFriend) return;
+    e.preventDefault();
+    const input=document.getElementById('dm-input'), body=input.value.trim();
+    if(!body||!cbSelectedFriend)return;
     const {error}=await cbSupabase.from('direct_messages').insert({sender_id:cbAuthUser.id,receiver_id:cbSelectedFriend.supabaseId,body});
-    if(error) return cbNotice('Не удалось отправить сообщение: '+error.message);
+    if(error)return cbNotice('Не удалось отправить сообщение: '+error.message);
     input.value=''; await cbLoadDirectMessages();
   };
 }
@@ -1702,21 +1761,35 @@ function cbRenderDmFriends() {
   el.innerHTML='';
   if(!friendsList.length){el.innerHTML='<p class="friend-sub">Пока нет друзей</p>';return;}
   friendsList.forEach(f=>{
-    const b=document.createElement('button'); b.className='dm-friend'+(cbSelectedFriend?.supabaseId===f.supabaseId?' active':'');
-    b.textContent=f.name; b.onclick=()=>{cbSelectedFriend=f;cbRenderDmFriends();cbLoadDirectMessages();};
+    const b=document.createElement('button'); b.type='button'; b.className='dm-friend'+(cbSelectedFriend?.supabaseId===f.supabaseId?' active':'');
+    const img=document.createElement('img'); img.src=getValidAvatar(f.avatar,f.name||f.userId); img.alt='';
+    const name=document.createElement('span'); name.className='dm-friend-name'; name.textContent=f.name;
+    b.append(img,name); b.onclick=()=>{cbSelectedFriend=f;cbRenderDmFriends();cbLoadDirectMessages();};
     el.appendChild(b);
   });
 }
 async function cbLoadDirectMessages() {
   if(!cbSelectedFriend||!cbSupabase)return;
-  document.getElementById('dm-title').textContent='Переписка с '+cbSelectedFriend.name;
+  const title=document.getElementById('dm-title'); title.innerHTML='';
+  const titleImg=document.createElement('img'); titleImg.src=getValidAvatar(cbSelectedFriend.avatar,cbSelectedFriend.name); titleImg.alt='';
+  const titleName=document.createElement('span'); titleName.textContent=cbSelectedFriend.name;
+  title.append(titleImg,titleName);
   const uid=cbAuthUser.id, other=cbSelectedFriend.supabaseId;
   const {data,error}=await cbSupabase.from('direct_messages').select('id,sender_id,receiver_id,body,created_at')
     .or(`and(sender_id.eq.${uid},receiver_id.eq.${other}),and(sender_id.eq.${other},receiver_id.eq.${uid})`)
     .order('created_at',{ascending:true}).limit(300);
   if(error){cbSetSocialStatus('Ошибка загрузки переписки: '+error.message);return;}
   const el=document.getElementById('dm-messages');el.innerHTML='';
-  (data||[]).forEach(m=>{const d=document.createElement('div');d.className='dm-message'+(m.sender_id===uid?' mine':'');d.textContent=m.body;el.appendChild(d);});
+  if(!(data||[]).length){el.innerHTML='<div class="dm-empty">Пока нет сообщений. Напиши первым!</div>';return;}
+  (data||[]).forEach(m=>{
+    const mine=m.sender_id===uid, row=document.createElement('div'); row.className='dm-message-row'+(mine?' mine':'');
+    const avatar=document.createElement('img'); avatar.src=mine?getValidAvatar(currentUser?.avatar,currentUser?.name):getValidAvatar(cbSelectedFriend.avatar,cbSelectedFriend.name); avatar.alt='';
+    const wrap=document.createElement('div'); wrap.className='dm-bubble-wrap';
+    const author=document.createElement('div'); author.className='dm-author'; author.textContent=mine?'Вы':cbSelectedFriend.name;
+    const bubble=document.createElement('div'); bubble.className='dm-message'; bubble.textContent=m.body;
+    const time=document.createElement('div'); time.className='dm-time'; time.textContent=new Date(m.created_at).toLocaleString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+    wrap.append(author,bubble,time); row.append(avatar,wrap); el.appendChild(row);
+  });
   el.scrollTop=el.scrollHeight;
 }
 function cbOverrideFriendUI() {
@@ -1733,7 +1806,7 @@ function cbOverrideFriendUI() {
   window.renderFriends=function(){
     const list=document.getElementById('friends-list'),count=document.getElementById('friends-count');if(!list)return;count.textContent=friendsList.length;list.innerHTML='';
     if(!friendsList.length){list.innerHTML='<li class="friend-sub">Пока нет друзей</li>';return;}
-    friendsList.forEach(f=>{const li=document.createElement('li');li.className='friend-item';const meta=document.createElement('div');meta.className='friend-meta';const n=document.createElement('div');n.className='friend-name';n.textContent=f.name;const sub=document.createElement('div');sub.className='friend-sub';sub.textContent='ID: '+f.userId;meta.append(n,sub);li.append(meta);list.append(li);});
+    friendsList.forEach(f=>{const li=document.createElement('li');li.className='friend-item';const avatar=document.createElement('img');avatar.src=getValidAvatar(f.avatar,f.name||f.userId);avatar.alt='';const meta=document.createElement('div');meta.className='friend-meta';const n=document.createElement('div');n.className='friend-name';n.textContent=f.name;const sub=document.createElement('div');sub.className='friend-sub';sub.textContent='ID: '+f.userId;meta.append(n,sub);li.append(avatar,meta);list.append(li);});
   };
 }
 async function cbRefreshProfile() {
