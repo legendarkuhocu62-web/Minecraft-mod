@@ -15,8 +15,12 @@ let roomState = {
   controllerPeerId: null,
   ruMode: false,
   videoFocus: false,
-  vfZoom: 130,
-  vfY: -30,
+  cutTop: 18,
+  cutBottom: 22,
+  cutLeft: 0,
+  cutRight: 0,
+  vfZoom: 115,
+  vfY: -20,
   mode: 'search', // 'search' | 'frame'
   query: '',
   browserUrl: '',
@@ -306,9 +310,7 @@ function handleMessageAtHost(fromPeerId, msg) {
     broadcastState();
     updateUI();
   } else if (msg.type === 'video-focus' && fromPeerId === roomState.controllerPeerId) {
-    roomState.videoFocus = Boolean(msg.videoFocus);
-    if (typeof msg.vfZoom === 'number') roomState.vfZoom = msg.vfZoom;
-    if (typeof msg.vfY === 'number') roomState.vfY = msg.vfY;
+    roomState = { ...roomState, ...msg };
     broadcastState();
     updateUI();
   }
@@ -386,7 +388,7 @@ function updateRuModeUI() {
     : 'Введите запрос для поиска в Google или адрес сайта';
 }
 
-// --- ФОКУС НА ВИДЕО (ТОЛЬКО КОГДА ОТКРЫТ САЙТ, КНОПКИ В ШАПКЕ) ---
+// --- РУЧНАЯ ОБРЕЗКА И ФОКУС НА ВИДЕО ---
 const workspaceEl = document.getElementById('workspace');
 const browserBox = document.getElementById('browser-container');
 const siteViewActions = document.getElementById('site-view-actions');
@@ -394,9 +396,20 @@ const videoFocusBtn = document.getElementById('video-focus-btn');
 const expandBrowserBtn = document.getElementById('expand-browser-btn');
 const exitExpandBtn = document.getElementById('exit-expand-btn');
 const videoCropBar = document.getElementById('video-crop-bar');
+
+const cutTopInput = document.getElementById('cut-top');
+const cutBottomInput = document.getElementById('cut-bottom');
+const cutLeftInput = document.getElementById('cut-left');
+const cutRightInput = document.getElementById('cut-right');
 const vfZoomInput = document.getElementById('vf-zoom');
 const vfYInput = document.getElementById('vf-y');
+
+const cutTopVal = document.getElementById('cut-top-val');
+const cutBottomVal = document.getElementById('cut-bottom-val');
+const cutLeftVal = document.getElementById('cut-left-val');
+const cutRightVal = document.getElementById('cut-right-val');
 const vfZoomVal = document.getElementById('vf-zoom-val');
+const vfYVal = document.getElementById('vf-y-val');
 
 function isSiteOpened() {
   return roomState.mode === 'frame' && Boolean(roomState.browserUrl);
@@ -409,43 +422,40 @@ function syncVideoFocusPayload(patch) {
     broadcastState();
   } else if (hasControl() && hostConn && hostConn.open) {
     hostConn.send({ type: 'video-focus', ...patch });
+  } else {
+    roomState = { ...roomState, ...patch };
+    applyVideoFocusUI();
   }
 }
 
 videoFocusBtn.onclick = () => {
   if (!isSiteOpened()) return;
-  const nextFocus = !roomState.videoFocus;
-  if (isHost() || hasControl()) {
-    syncVideoFocusPayload({
-      videoFocus: nextFocus,
-      vfZoom: roomState.vfZoom || 130,
-      vfY: typeof roomState.vfY === 'number' ? roomState.vfY : -30
-    });
-  } else {
-    roomState.videoFocus = nextFocus;
-    applyVideoFocusUI();
-  }
+  syncVideoFocusPayload({ videoFocus: !roomState.videoFocus });
 };
 
-vfZoomInput.oninput = () => {
-  const z = Number(vfZoomInput.value);
-  vfZoomVal.textContent = `${z}%`;
-  if (isHost() || hasControl()) {
-    syncVideoFocusPayload({ vfZoom: z });
-  } else {
-    roomState.vfZoom = z;
-    applyVideoFocusUI();
-  }
-};
+function bindCropSlider(inputEl, key, formatter) {
+  inputEl.oninput = () => {
+    const val = Number(inputEl.value);
+    syncVideoFocusPayload({ [key]: val });
+  };
+}
 
-vfYInput.oninput = () => {
-  const y = Number(vfYInput.value);
-  if (isHost() || hasControl()) {
-    syncVideoFocusPayload({ vfY: y });
-  } else {
-    roomState.vfY = y;
-    applyVideoFocusUI();
-  }
+bindCropSlider(cutTopInput, 'cutTop');
+bindCropSlider(cutBottomInput, 'cutBottom');
+bindCropSlider(cutLeftInput, 'cutLeft');
+bindCropSlider(cutRightInput, 'cutRight');
+bindCropSlider(vfZoomInput, 'vfZoom');
+bindCropSlider(vfYInput, 'vfY');
+
+document.getElementById('reset-crop-btn').onclick = () => {
+  syncVideoFocusPayload({
+    cutTop: 0,
+    cutBottom: 0,
+    cutLeft: 0,
+    cutRight: 0,
+    vfZoom: 100,
+    vfY: 0
+  });
 };
 
 function applyVideoFocusUI() {
@@ -461,12 +471,26 @@ function applyVideoFocusUI() {
   }
 
   const active = Boolean(roomState.videoFocus) && opened;
-  const zoom = Number(roomState.vfZoom || 130);
-  const y = Number(roomState.vfY ?? -30);
+  const top = Number(roomState.cutTop ?? 18);
+  const bottom = Number(roomState.cutBottom ?? 22);
+  const left = Number(roomState.cutLeft ?? 0);
+  const right = Number(roomState.cutRight ?? 0);
+  const zoom = Number(roomState.vfZoom ?? 115);
+  const y = Number(roomState.vfY ?? -20);
 
+  cutTopInput.value = top;
+  cutBottomInput.value = bottom;
+  cutLeftInput.value = left;
+  cutRightInput.value = right;
   vfZoomInput.value = zoom;
   vfYInput.value = y;
+
+  cutTopVal.textContent = `${top}%`;
+  cutBottomVal.textContent = `${bottom}%`;
+  cutLeftVal.textContent = `${left}%`;
+  cutRightVal.textContent = `${right}%`;
   vfZoomVal.textContent = `${zoom}%`;
+  vfYVal.textContent = `${y}px`;
 
   workspaceEl.classList.toggle('video-focus', active);
   videoFocusBtn.classList.toggle('active-focus', active);
@@ -474,9 +498,10 @@ function applyVideoFocusUI() {
   videoCropBar.classList.toggle('hidden', !active);
 
   if (active) {
-    const scale = zoom / 100;
-    iframe.style.transform = `translateY(${y}px) scale(${scale})`;
+    iframe.style.clipPath = `inset(${top}% ${right}% ${bottom}% ${left}%)`;
+    iframe.style.transform = `translateY(${y}px) scale(${zoom / 100})`;
   } else {
+    iframe.style.clipPath = 'none';
     iframe.style.transform = 'none';
   }
 }
