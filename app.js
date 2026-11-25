@@ -14,6 +14,9 @@ let roomState = {
   hostPeerId: null,
   controllerPeerId: null,
   ruMode: false,
+  videoFocus: false,
+  vfZoom: 135,
+  vfY: -40,
   mode: 'search', // 'search' | 'frame'
   query: '',
   browserUrl: '',
@@ -301,6 +304,12 @@ function handleMessageAtHost(fromPeerId, msg) {
     roomState.ruMode = Boolean(msg.ruMode);
     broadcastState();
     updateUI();
+  } else if (msg.type === 'video-focus' && fromPeerId === roomState.controllerPeerId) {
+    roomState.videoFocus = Boolean(msg.videoFocus);
+    if (typeof msg.vfZoom === 'number') roomState.vfZoom = msg.vfZoom;
+    if (typeof msg.vfY === 'number') roomState.vfY = msg.vfY;
+    broadcastState();
+    updateUI();
   }
 }
 
@@ -376,6 +385,88 @@ function updateRuModeUI() {
     : 'Введите запрос для поиска в Google или адрес сайта';
 }
 
+// --- ФОКУС НА ВИДЕО (УВЕЛИЧЕНИЕ/ОБРЕЗКА САЙТА БЕЗ ОБРЕЗКИ ЧАТА) ---
+const workspaceEl = document.getElementById('workspace');
+const browserBox = document.getElementById('browser-container');
+const videoFocusBtn = document.getElementById('video-focus-btn');
+const expandBrowserBtn = document.getElementById('expand-browser-btn');
+const videoCropBar = document.getElementById('video-crop-bar');
+const vfZoomInput = document.getElementById('vf-zoom');
+const vfYInput = document.getElementById('vf-y');
+const vfZoomVal = document.getElementById('vf-zoom-val');
+
+function syncVideoFocusPayload(patch) {
+  if (isHost()) {
+    roomState = { ...roomState, ...patch };
+    applyVideoFocusUI();
+    broadcastState();
+  } else if (hasControl() && hostConn && hostConn.open) {
+    hostConn.send({ type: 'video-focus', ...patch });
+  }
+}
+
+videoFocusBtn.onclick = () => {
+  const nextFocus = !roomState.videoFocus;
+  if (isHost() || hasControl()) {
+    syncVideoFocusPayload({
+      videoFocus: nextFocus,
+      vfZoom: roomState.vfZoom || 135,
+      vfY: typeof roomState.vfY === 'number' ? roomState.vfY : -40
+    });
+  } else {
+    roomState.videoFocus = nextFocus;
+    applyVideoFocusUI();
+  }
+};
+
+vfZoomInput.oninput = () => {
+  const z = Number(vfZoomInput.value);
+  vfZoomVal.textContent = `${z}%`;
+  if (isHost() || hasControl()) {
+    syncVideoFocusPayload({ vfZoom: z });
+  } else {
+    roomState.vfZoom = z;
+    applyVideoFocusUI();
+  }
+};
+
+vfYInput.oninput = () => {
+  const y = Number(vfYInput.value);
+  if (isHost() || hasControl()) {
+    syncVideoFocusPayload({ vfY: y });
+  } else {
+    roomState.vfY = y;
+    applyVideoFocusUI();
+  }
+};
+
+function applyVideoFocusUI() {
+  const active = Boolean(roomState.videoFocus);
+  const zoom = Number(roomState.vfZoom || 135);
+  const y = Number(roomState.vfY ?? -40);
+
+  vfZoomInput.value = zoom;
+  vfYInput.value = y;
+  vfZoomVal.textContent = `${zoom}%`;
+
+  workspaceEl.classList.toggle('video-focus', active);
+  videoFocusBtn.classList.toggle('active-focus', active);
+  videoFocusBtn.textContent = active ? '🎬 Обычный вид' : '🎬 Фокус на видео';
+  videoCropBar.classList.toggle('hidden', !active);
+
+  if (active) {
+    const scale = zoom / 100;
+    iframe.style.transform = `translateY(${y}px) scale(${scale})`;
+  } else {
+    iframe.style.transform = 'none';
+  }
+}
+
+expandBrowserBtn.onclick = () => {
+  const expanded = browserBox.classList.toggle('expanded');
+  expandBrowserBtn.textContent = expanded ? '✕ Свернуть' : '⛶ На весь экран';
+};
+
 function updateUI() {
   const badge = document.getElementById('role-badge');
   const shield = document.getElementById('viewer-shield');
@@ -399,6 +490,7 @@ function updateUI() {
 
   updateRuModeUI();
   applyBrowserState();
+  applyVideoFocusUI();
   renderUsers();
 }
 

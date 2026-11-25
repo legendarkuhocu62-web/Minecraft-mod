@@ -101,9 +101,21 @@
       </div>
     </header>
 
-    <main class="workspace">
+    <main id="workspace" class="workspace">
       <div id="browser-container" class="browser-container">
-        <button type="button" id="expand-browser-btn" class="expand-btn" title="Во весь экран">⛶ На весь экран</button>
+        <div class="view-toolbar">
+          <button type="button" id="video-focus-btn" class="btn-small btn-primary">🎬 Фокус на видео</button>
+          <button type="button" id="expand-browser-btn" class="btn-small btn-secondary">⛶ На весь экран</button>
+        </div>
+
+        <div id="video-crop-bar" class="video-crop-bar hidden">
+          <label>Зум: <span id="vf-zoom-val">135%</span>
+            <input type="range" id="vf-zoom" min="100" max="220" value="135">
+          </label>
+          <label>Сдвиг вверх/вниз:
+            <input type="range" id="vf-y" min="-180" max="180" value="-40">
+          </label>
+        </div>
 
         <div id="google-launcher" class="google-launcher">
           <div class="google-logo">Google</div>
@@ -115,17 +127,20 @@
           <div id="search-results" class="search-results"></div>
         </div>
 
-        <iframe id="virtual-browser-frame" class="hidden" allow="autoplay; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
+        <div id="iframe-crop-wrap" class="iframe-crop-wrap">
+          <iframe id="virtual-browser-frame" class="hidden" allow="autoplay; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
+        </div>
+
         <div id="viewer-shield" class="viewer-shield hidden" title="Управление сейчас у другого участника"></div>
       </div>
 
-      <aside class="sidebar">
-        <div class="panel-section">
+      <aside id="sidebar" class="sidebar">
+        <div id="users-section" class="panel-section">
           <h4>Участники (<span id="users-count">1</span>)</h4>
           <ul id="users-list" class="users-list"></ul>
         </div>
 
-        <div class="panel-section chat-section">
+        <div id="chat-section" class="panel-section chat-section">
           <h4>Чат комнаты</h4>
           <div id="chat-messages" class="chat-messages"></div>
           <form id="chat-form" class="chat-form">
@@ -138,16 +153,5 @@
   </div>
 
   <script src="app.js"></script>
-  <script>
-    (function () {
-      const btn = document.getElementById('expand-browser-btn');
-      const box = document.getElementById('browser-container');
-      if (!btn || !box) return;
-      btn.addEventListener('click', () => {
-        const expanded = box.classList.toggle('expanded');
-        btn.textContent = expanded ? '✕ Свернуть' : '⛶ На весь экран';
-      });
-    })();
-  </script>
 </body>
 </html>

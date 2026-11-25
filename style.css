@@ -1,4 +1,3 @@
-
 :root {
   --bg: #0f1115;
   --surface: #181b22;
@@ -104,30 +103,72 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 .workspace { display: flex; flex: 1; min-height: calc(100vh - 56px); width: 100%; }
 .browser-container {
   flex: 1; position: relative; background: #0f1115;
-  display: block; min-height: 82vh; width: 100%; max-width: 100%; overflow: hidden;
+  display: flex; flex-direction: column; min-height: 78vh; width: 100%; max-width: 100%; overflow: hidden;
 }
 .browser-container.expanded {
   position: fixed; inset: 0; z-index: 90;
   height: 100vh; width: 100vw; max-width: 100vw; min-height: 100vh; border-radius: 0;
 }
-.expand-btn {
-  position: absolute; top: 10px; right: 10px; z-index: 30;
-  background: rgba(15, 17, 21, 0.85); border: 1px solid var(--border);
-  padding: 0.4rem 0.75rem; font-size: 0.78rem; border-radius: 8px;
-}
-.expand-btn:hover { background: var(--primary); }
 
+.view-toolbar {
+  position: absolute; top: 10px; right: 10px; z-index: 35;
+  display: flex; gap: 0.45rem;
+}
+.view-toolbar button {
+  background: rgba(15, 17, 21, 0.86); border: 1px solid var(--border);
+  backdrop-filter: blur(6px);
+}
+.view-toolbar .btn-primary.active-focus {
+  background: var(--green); color: #052e16; border-color: var(--green);
+}
+
+.video-crop-bar {
+  position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 35;
+  background: rgba(15, 17, 21, 0.9); border: 1px solid var(--border);
+  border-radius: 12px; padding: 0.6rem 0.85rem;
+  display: flex; gap: 0.9rem; flex-wrap: wrap; font-size: 0.78rem; color: var(--muted);
+  backdrop-filter: blur(6px);
+}
+.video-crop-bar label { flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 0.25rem; }
+
+.iframe-crop-wrap {
+  flex: 1; width: 100%; height: 100%; position: relative; overflow: hidden;
+}
 .browser-container iframe {
-  width: 100%; max-width: 100%; height: 100%; min-height: 82vh;
+  width: 100%; height: 100%; min-height: 78vh;
   border: none; background: #fff; display: block;
+  transform-origin: center center; transition: transform 0.15s ease-out;
 }
 .browser-container.expanded iframe { height: 100vh; min-height: 100vh; }
+
+/* Режим фокуса на видео: увеличиваем видео и обрезаем лишние края сайта, но оставляем чат видимым */
+.workspace.video-focus {
+  flex-direction: column;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+.workspace.video-focus .browser-container {
+  flex: 1 1 auto;
+  height: 64vh;
+  min-height: 360px;
+}
+.workspace.video-focus .sidebar {
+  width: 100%;
+  height: 36vh;
+  min-height: 210px;
+  border-left: none;
+  border-top: 1px solid var(--border);
+}
+.workspace.video-focus #users-section {
+  display: none;
+}
 
 .viewer-shield { position: absolute; inset: 0; z-index: 20; background: rgba(0,0,0,0.02); cursor: not-allowed; }
 .hidden { display: none !important; }
 
 .google-launcher {
-  width: 100%; height: 100%; min-height: 82vh; overflow-y: auto; padding: 2.2rem 1.25rem;
+  flex: 1; width: 100%; height: 100%; min-height: 78vh; overflow-y: auto; padding: 2.2rem 1.25rem;
   background: #1f2125; color: #e8eaed;
   display: flex; flex-direction: column; align-items: center; gap: 1.1rem;
 }
@@ -183,9 +224,11 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 .chat-form button { background: var(--primary); color: white; padding: 0 0.9rem; }
 
 @media (max-width: 768px) {
-  .workspace { flex-direction: column; min-height: auto; width: 100%; }
-  .browser-container { height: 85vh; min-height: 640px; width: 100%; max-width: 100%; }
-  .browser-container iframe, .google-launcher { min-height: 640px; width: 100%; max-width: 100%; }
-  .sidebar { width: 100%; border-left: none; border-top: 1px solid var(--border); min-height: 360px; }
+  .workspace:not(.video-focus) { flex-direction: column; min-height: auto; width: 100%; }
+  .workspace:not(.video-focus) .browser-container { height: 82vh; min-height: 600px; width: 100%; max-width: 100%; }
+  .workspace:not(.video-focus) .browser-container iframe,
+  .workspace:not(.video-focus) .google-launcher { min-height: 600px; width: 100%; max-width: 100%; }
+  .workspace:not(.video-focus) .sidebar { width: 100%; border-left: none; border-top: 1px solid var(--border); min-height: 360px; }
   .browser-connect input { width: 100%; }
 }
+
