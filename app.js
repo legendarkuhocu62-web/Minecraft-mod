@@ -2070,6 +2070,81 @@ function cbStartPresence() {
       }
     });
 }
+function cbOpenRoomInvitePicker() {
+  if (!activeRoomId) return cbNotice('Сначала войди в комнату.');
+  if (!isHost()) return cbNotice('Приглашать друзей может только создатель комнаты.');
+  if (!cbAuthUser || !cbPresenceChannel || !cbPresenceReady) {
+    return cbNotice('Подключение к списку друзей ещё не готово. Подожди немного и попробуй снова.');
+  }
+  const old = document.querySelector('.cb-dialog-overlay');
+  if (old) old.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'cb-dialog-overlay cb-dialog-visible';
+  const card = document.createElement('div');
+  card.className = 'cb-dialog-card cb-invite-picker';
+  const heading = document.createElement('h3');
+  heading.textContent = 'Пригласить друга';
+  const desc = document.createElement('p');
+  desc.className = 'cb-dialog-message';
+  desc.textContent = 'Выбери друга, которому отправить приглашение в комнату ' + activeRoomId + '.';
+  const list = document.createElement('div');
+  list.className = 'cb-invite-friend-list';
+  if (!friendsList.length) {
+    const empty = document.createElement('div');
+    empty.className = 'cb-invite-empty';
+    empty.textContent = 'Пока нет друзей. Добавь их во вкладке «Друзья».';
+    list.appendChild(empty);
+  }
+  friendsList.forEach(friend => {
+    if (!friend.supabaseId) return;
+    const online = Boolean(cbPresenceUsers[friend.supabaseId]);
+    const item = document.createElement('div');
+    item.className = 'cb-invite-friend';
+    const avatar = document.createElement('img');
+    avatar.src = getValidAvatar(friend.avatar, friend.name);
+    avatar.alt = '';
+    const info = document.createElement('div');
+    info.className = 'cb-invite-friend-info';
+    const name = document.createElement('strong');
+    name.textContent = friend.name || 'Друг';
+    const status = document.createElement('small');
+    status.textContent = online ? '● В сети' : '○ Не в сети';
+    status.className = online ? 'is-online' : 'is-offline';
+    info.append(name, status);
+    const send = document.createElement('button');
+    send.type = 'button';
+    send.className = 'btn-small ' + (online ? 'btn-primary' : 'btn-secondary');
+    send.textContent = online ? 'Пригласить' : 'Не в сети';
+    send.disabled = !online;
+    send.addEventListener('click', async () => {
+      send.disabled = true;
+      send.textContent = 'Отправка…';
+      await cbInviteFriendToRoom(friend);
+      overlay.remove();
+    });
+    item.append(avatar, info, send);
+    list.appendChild(item);
+  });
+  const actions = document.createElement('div');
+  actions.className = 'cb-dialog-actions';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'cb-dialog-cancel';
+  close.textContent = 'Закрыть';
+  close.addEventListener('click', () => overlay.remove());
+  actions.appendChild(close);
+  card.append(heading, desc, list, actions);
+  overlay.appendChild(card);
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.addEventListener('keydown', function onEsc(e) {
+    if (e.key === 'Escape' && overlay.isConnected) overlay.remove();
+    if (!overlay.isConnected) document.removeEventListener('keydown', onEsc);
+  });
+  document.body.appendChild(overlay);
+}
+
+document.getElementById('invite-friend-room-btn')?.addEventListener('click', cbOpenRoomInvitePicker);
+
 async function cbInviteFriendToRoom(friend) {
   const online = cbPresenceUsers[friend.supabaseId];
   if (!online) return cbNotice('Друг сейчас не в сети.');

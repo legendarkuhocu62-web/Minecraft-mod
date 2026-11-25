@@ -406,3 +406,25 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
   .cb-dialog-actions { flex-direction: column-reverse; }
   .cb-dialog-actions button { width: 100%; }
 }
+
+
+/* Room invite friend picker */
+.cb-invite-picker { width: min(100%, 460px); text-align: left; }
+.cb-invite-picker h3 { text-align: center; }
+.cb-invite-picker > .cb-dialog-message { text-align: center; }
+.cb-invite-friend-list { display: flex; flex-direction: column; gap: 9px; max-height: min(48vh, 360px); overflow-y: auto; margin: 4px 0 18px; }
+.cb-invite-friend { display: flex; align-items: center; gap: 11px; padding: 10px; border: 1px solid rgba(255,255,255,.1); border-radius: 13px; background: rgba(255,255,255,.045); }
+.cb-invite-friend > img { width: 42px; height: 42px; flex: 0 0 42px; object-fit: cover; border-radius: 50%; }
+.cb-invite-friend-info { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
+.cb-invite-friend-info strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.cb-invite-friend-info small { font-size: 11px; color: #aeb4c4; }
+.cb-invite-friend-info small.is-online { color: #34d399; }
+.cb-invite-friend-info small.is-offline { color: #9299a8; }
+.cb-invite-friend button:disabled { opacity: .55; cursor: not-allowed; }
+.cb-invite-empty { padding: 18px 10px; text-align: center; color: #b7bdcd; font-size: 14px; }
+.cb-dialog-actions { justify-content: flex-end; }
+@media (max-width: 650px) {
+  #invite-friend-room-btn { white-space: nowrap; }
+  .cb-invite-friend { gap: 8px; padding: 8px; }
+  .cb-invite-friend > img { width: 36px; height: 36px; flex-basis: 36px; }
+}
