@@ -1952,6 +1952,73 @@ function cbUpdatePresenceLabels() {
     el.textContent = meta?.in_room ? `В комнате ${meta.room_code}` : (meta ? 'В сети' : 'Не в сети');
   });
 }
+
+function cbShowRoomDialog({title, message, name, avatar, roomCode, acceptText='Войти', cancelText='Отмена'}) {
+  return new Promise(resolve => {
+    const old = document.querySelector('.cb-dialog-overlay');
+    if (old) old.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'cb-dialog-overlay';
+    const card = document.createElement('div');
+    card.className = 'cb-dialog-card';
+    const avatarEl = document.createElement('div');
+    avatarEl.className = 'cb-dialog-avatar';
+    if (avatar) {
+      const img = document.createElement('img');
+      img.src = avatar;
+      img.alt = '';
+      avatarEl.appendChild(img);
+    } else {
+      avatarEl.textContent = (name || '?').trim().charAt(0).toUpperCase() || '?';
+    }
+    const heading = document.createElement('h3');
+    heading.textContent = title;
+    const who = document.createElement('div');
+    who.className = 'cb-dialog-name';
+    who.textContent = name || 'Друг';
+    const body = document.createElement('p');
+    body.className = 'cb-dialog-message';
+    body.textContent = message;
+    card.append(avatarEl, heading, who, body);
+    if (roomCode) {
+      const room = document.createElement('div');
+      room.className = 'cb-dialog-room';
+      room.textContent = 'Комната · ' + roomCode;
+      card.appendChild(room);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'cb-dialog-actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'cb-dialog-cancel';
+    cancel.textContent = cancelText;
+    const accept = document.createElement('button');
+    accept.type = 'button';
+    accept.className = 'cb-dialog-accept';
+    accept.textContent = acceptText;
+    actions.append(cancel, accept);
+    card.appendChild(actions);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKey);
+      overlay.classList.add('cb-dialog-closing');
+      setTimeout(() => overlay.remove(), 160);
+      resolve(value);
+    };
+    const onKey = e => { if (e.key === 'Escape') finish(false); };
+    cancel.addEventListener('click', () => finish(false));
+    accept.addEventListener('click', () => finish(true));
+    overlay.addEventListener('click', e => { if (e.target === overlay) finish(false); });
+    document.addEventListener('keydown', onKey);
+    requestAnimationFrame(() => overlay.classList.add('cb-dialog-visible'));
+    accept.focus();
+  });
+}
+
 function cbStartPresence() {
   if (!cbSupabase || !cbAuthUser || cbPresenceChannel) return;
   cbPresenceChannel = cbSupabase.channel('cobrowser-online-presence', {
@@ -1961,16 +2028,34 @@ function cbStartPresence() {
     .on('presence', { event: 'sync' }, cbPresenceSnapshot)
     .on('presence', { event: 'join' }, cbPresenceSnapshot)
     .on('presence', { event: 'leave' }, cbPresenceSnapshot)
-    .on('broadcast', { event: 'room-invite' }, ({payload}) => {
+    .on('broadcast', { event: 'room-invite' }, async ({payload}) => {
       if (payload?.to !== cbAuthUser.id) return;
-      if (confirm(`${payload.from_name} приглашает тебя в комнату ${payload.room_code}. Войти?`)) {
+      const friend = friendsList.find(f => f.supabaseId === payload.from);
+      const accepted = await cbShowRoomDialog({
+        title: 'Приглашение в комнату',
+        message: 'Приглашает тебя посмотреть фильм вместе.',
+        name: payload.from_name || friend?.name || 'Друг',
+        avatar: friend?.avatar || '',
+        roomCode: payload.room_code,
+        acceptText: 'Войти в комнату'
+      });
+      if (accepted) {
         cbPresenceChannel.send({type:'broadcast',event:'room-invite-accepted',payload:{to:payload.from,room_code:payload.room_code}});
         startRoom(payload.room_code, false);
       }
     })
     .on('broadcast', { event: 'room-join-request' }, async ({payload}) => {
       if (payload?.to !== cbAuthUser.id || !isHost() || !activeRoomId) return;
-      if (confirm(`${payload.from_name} просится в твою комнату. Разрешить вход?`)) {
+      const friend = friendsList.find(f => f.supabaseId === payload.from);
+      const accepted = await cbShowRoomDialog({
+        title: 'Запрос на вход',
+        message: 'Хочет присоединиться к просмотру в твоей комнате.',
+        name: payload.from_name || friend?.name || 'Друг',
+        avatar: friend?.avatar || '',
+        roomCode: activeRoomId,
+        acceptText: 'Разрешить вход'
+      });
+      if (accepted) {
         cbPresenceChannel.send({type:'broadcast',event:'room-invite',payload:{to:payload.from,from:cbAuthUser.id,from_name:currentUser.name,room_code:activeRoomId}});
       }
     })
