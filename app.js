@@ -5,8 +5,6 @@ let currentUser = JSON.parse(localStorage.getItem('cobrowser_user')) || null;
 let friendsList = JSON.parse(localStorage.getItem('cobrowser_friends')) || [];
 let friendRequests = JSON.parse(localStorage.getItem('cobrowser_friend_requests')) || [];
 let outgoingRequests = JSON.parse(localStorage.getItem('cobrowser_outgoing_requests')) || [];
-// Общая база известных игроков (userId -> { userId, peerId, name, avatar, lastRoom, updatedAt })
-let usersDirectory = JSON.parse(localStorage.getItem('cobrowser_users_db')) || {};
 
 let avatarSeed = currentUser?.seed || Math.random().toString(36).substring(7);
 let pendingAvatarDataUrl = currentUser?.avatar || null;
@@ -80,68 +78,6 @@ function getValidAvatar(avatar, fallbackSeed) {
   return getGeneratedAvatarUrl(fallbackSeed || 'Guest');
 }
 
-// --- ОБЩАЯ БАЗА ИГРОКОВ И АВАТАРОК ---
-function saveUsersDirectory() {
-  localStorage.setItem('cobrowser_users_db', JSON.stringify(usersDirectory));
-}
-
-function registerKnownUser(profile) {
-  if (!profile) return null;
-  const uid = (profile.userId || profile.id || '').trim();
-  const key = uid || (profile.peerId ? `peer_${profile.peerId}` : '');
-  if (!key) return null;
-
-  const prev = usersDirectory[key] || {};
-  const name = (profile.name || prev.name || uid || 'Игрок').trim();
-  const avatar = getValidAvatar(profile.avatar || prev.avatar, name || key);
-
-  const entry = {
-    userId: uid || prev.userId || '',
-    peerId: profile.peerId || prev.peerId || '',
-    name,
-    avatar,
-    lastRoom: profile.roomId || profile.lastRoom || prev.lastRoom || '',
-    updatedAt: Date.now()
-  };
-
-  usersDirectory[key] = entry;
-  saveUsersDirectory();
-
-  // Синхронизируем аватарку и данные, если этот человек уже есть в друзьях
-  let friendChanged = false;
-  friendsList = friendsList.map(f => {
-    const match = (entry.userId && f.userId === entry.userId) ||
-                  (entry.peerId && f.peerId === entry.peerId);
-    if (match) {
-      friendChanged = true;
-      return {
-        ...f,
-        userId: entry.userId || f.userId,
-        peerId: entry.peerId || f.peerId,
-        name: entry.name,
-        avatar: entry.avatar,
-        lastRoom: entry.lastRoom || f.lastRoom
-      };
-    }
-    return f;
-  });
-
-  if (friendChanged) {
-    localStorage.setItem('cobrowser_friends', JSON.stringify(friendsList));
-    renderFriends();
-  }
-
-  return entry;
-}
-
-function resolveUserAvatar(userObj) {
-  if (!userObj) return getGeneratedAvatarUrl('Guest');
-  const key = userObj.userId || (userObj.peerId ? `peer_${userObj.peerId}` : '');
-  const fromDb = key ? usersDirectory[key] : null;
-  if (fromDb?.avatar) return getValidAvatar(fromDb.avatar, fromDb.name || key);
-  return getValidAvatar(userObj.avatar, userObj.name || userObj.userId);
-}
-
 // --- ДРУЗЬЯ И ЗАЯВКИ В ДРУЗЬЯ ---
 function persistFriendsData() {
   localStorage.setItem('cobrowser_friends', JSON.stringify(friendsList));
@@ -157,7 +93,7 @@ function isFriend(userObj) {
   return friendsList.some(f =>
     (userObj.userId && f.userId && f.userId === userObj.userId) ||
     (userObj.peerId && f.peerId && f.peerId === userObj.peerId) ||
-    (!userObj.userId && !userObj.peerId && userObj.name && f.name && f.name.toLowerCase() === userObj.name.toLowerCase())
+    (userObj.name && f.name && f.name.toLowerCase() === userObj.name.toLowerCase())
   );
 }
 
@@ -166,14 +102,12 @@ function hasOutgoingRequest(userObj) {
   return outgoingRequests.some(r =>
     (userObj.userId && r.userId && r.userId === userObj.userId) ||
     (userObj.peerId && r.peerId && r.peerId === userObj.peerId) ||
-    (!userObj.userId && !userObj.peerId && userObj.name && r.name && r.name.toLowerCase() === userObj.name.toLowerCase())
+    (userObj.name && r.name && r.name.toLowerCase() === userObj.name.toLowerCase())
   );
 }
 
 function upsertFriendRecord(record) {
-  const registered = registerKnownUser(record);
-  const realAvatar = resolveUserAvatar(registered || record);
-
+  const realAvatar = getValidAvatar(record.avatar, record.name || record.userId);
   const existingIdx = friendsList.findIndex(f =>
     (record.userId && f.userId && f.userId === record.userId) ||
     (record.peerId && f.peerId && f.peerId === record.peerId) ||
@@ -217,16 +151,6 @@ function sendDirectPeerMessage(targetPeerId, payload) {
   return true;
 }
 
-function getMyFullProfile() {
-  return {
-    userId: currentUser.id,
-    peerId: peer?.id || '',
-    name: currentUser.name,
-    avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name),
-    roomId: roomState.id || ''
-  };
-}
-
 function sendFriendRequest(targetUser) {
   if (!targetUser || !currentUser) return;
   const targetId = (targetUser.userId || targetUser.peerId || '').trim();
@@ -235,15 +159,18 @@ function sendFriendRequest(targetUser) {
   if (targetId && (targetId === currentUser.id || targetId === peer?.id)) return;
   if (isFriend(targetUser)) return;
 
-  const known = targetUser.userId ? usersDirectory[targetUser.userId] : null;
-  const resolvedPeerId = targetUser.peerId || known?.peerId || '';
-
-  const myProfile = getMyFullProfile();
+  const myProfile = {
+    userId: currentUser.id,
+    peerId: peer?.id || '',
+    name: currentUser.name,
+    avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name),
+    roomId: roomState.id || ''
+  };
 
   if (!hasOutgoingRequest(targetUser)) {
     outgoingRequests.push({
       userId: targetUser.userId || '',
-      peerId: resolvedPeerId,
+      peerId: targetUser.peerId || '',
       name: targetName
     });
   }
@@ -252,12 +179,14 @@ function sendFriendRequest(targetUser) {
     type: 'friend-request',
     from: myProfile,
     toUserId: targetUser.userId || '',
-    toPeerId: resolvedPeerId
+    toPeerId: targetUser.peerId || ''
   };
 
-  if (resolvedPeerId) {
-    sendDirectPeerMessage(resolvedPeerId, reqPayload);
+  // Если знаем прямой peerId — шлём напрямую
+  if (targetUser.peerId) {
+    sendDirectPeerMessage(targetUser.peerId, reqPayload);
   }
+  // Если в комнате — можно маршрутизировать через хоста по userId/peerId
   if (hostConn && hostConn.open) {
     hostConn.send(reqPayload);
   } else if (isHost()) {
@@ -272,31 +201,22 @@ function handleIncomingFriendRequest(msg) {
   const from = msg.from;
   if (!from) return;
   if (from.userId && from.userId === currentUser?.id) return;
-
-  registerKnownUser(from);
   if (isFriend(from)) return;
 
-  const cleanAvatar = getValidAvatar(from.avatar, from.name || from.userId);
-  const idx = friendRequests.findIndex(r =>
+  const exists = friendRequests.some(r =>
     (from.userId && r.userId === from.userId) ||
     (from.peerId && r.peerId === from.peerId)
   );
-
-  const reqItem = {
-    userId: from.userId || '',
-    peerId: from.peerId || '',
-    name: from.name || 'Пользователь',
-    avatar: cleanAvatar,
-    roomId: from.roomId || ''
-  };
-
-  if (idx >= 0) {
-    friendRequests[idx] = { ...friendRequests[idx], ...reqItem };
+  if (!exists) {
+    friendRequests.push({
+      userId: from.userId || '',
+      peerId: from.peerId || '',
+      name: from.name || 'Пользователь',
+      avatar: getValidAvatar(from.avatar, from.name || from.userId),
+      roomId: from.roomId || ''
+    });
     persistFriendsData();
-  } else {
-    friendRequests.push(reqItem);
-    persistFriendsData();
-    addSystemMessage(`💌 Новое предложение в друзья от ${reqItem.name}`);
+    addSystemMessage(`💌 Новое предложение в друзья от ${from.name}`);
   }
 }
 
@@ -305,26 +225,29 @@ function acceptFriendRequest(index) {
   if (!req) return;
   friendRequests.splice(index, 1);
 
-  const known = req.userId ? usersDirectory[req.userId] : null;
-  const targetPeerId = req.peerId || known?.peerId || '';
-
   upsertFriendRecord({
     userId: req.userId,
-    peerId: targetPeerId,
+    peerId: req.peerId,
     name: req.name,
     avatar: req.avatar,
-    lastRoom: req.roomId || known?.lastRoom || roomState.id || ''
+    lastRoom: req.roomId || roomState.id || ''
   });
 
   const acceptPayload = {
     type: 'friend-accept',
-    from: getMyFullProfile(),
+    from: {
+      userId: currentUser.id,
+      peerId: peer?.id || '',
+      name: currentUser.name,
+      avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name),
+      roomId: roomState.id || ''
+    },
     toUserId: req.userId || '',
-    toPeerId: targetPeerId
+    toPeerId: req.peerId || ''
   };
 
-  if (targetPeerId) {
-    sendDirectPeerMessage(targetPeerId, acceptPayload);
+  if (req.peerId) {
+    sendDirectPeerMessage(req.peerId, acceptPayload);
   }
   if (hostConn && hostConn.open) {
     hostConn.send(acceptPayload);
@@ -366,7 +289,7 @@ function renderFriendRequests() {
     li.className = 'friend-item';
 
     const img = document.createElement('img');
-    img.src = resolveUserAvatar(req);
+    img.src = getValidAvatar(req.avatar, req.name || req.userId);
     img.alt = req.name;
 
     const meta = document.createElement('div');
@@ -422,28 +345,24 @@ function renderFriends() {
   }
 
   friendsList.forEach((f, idx) => {
-    const known = f.userId ? usersDirectory[f.userId] : null;
-    const displayName = known?.name || f.name;
-    const displayRoom = known?.lastRoom || f.lastRoom;
-
     const li = document.createElement('li');
     li.className = 'friend-item';
 
     const img = document.createElement('img');
-    img.src = resolveUserAvatar({ ...f, ...known });
-    img.alt = displayName;
+    img.src = getValidAvatar(f.avatar, f.name || f.userId);
+    img.alt = f.name;
 
     const meta = document.createElement('div');
     meta.className = 'friend-meta';
 
     const nameDiv = document.createElement('div');
     nameDiv.className = 'friend-name';
-    nameDiv.textContent = displayName;
+    nameDiv.textContent = f.name;
 
     const subDiv = document.createElement('div');
     subDiv.className = 'friend-sub';
     const idPart = f.userId ? `ID: ${f.userId}` : 'Друг';
-    const roomPart = displayRoom ? ` · Комната: ${displayRoom}` : '';
+    const roomPart = f.lastRoom ? ` · Комната: ${f.lastRoom}` : '';
     subDiv.textContent = `${idPart}${roomPart}`;
 
     meta.appendChild(nameDiv);
@@ -452,12 +371,12 @@ function renderFriends() {
     const actions = document.createElement('div');
     actions.className = 'friend-actions';
 
-    if (displayRoom) {
+    if (f.lastRoom) {
       const joinBtn = document.createElement('button');
       joinBtn.type = 'button';
       joinBtn.className = 'btn-primary btn-small';
       joinBtn.textContent = 'Войти';
-      joinBtn.onclick = () => startRoom(displayRoom.toUpperCase(), false);
+      joinBtn.onclick = () => startRoom(f.lastRoom.toUpperCase(), false);
       actions.appendChild(joinBtn);
     }
 
@@ -496,18 +415,11 @@ document.getElementById('add-friend-manual-btn').onclick = () => {
   const input = document.getElementById('friend-name-input');
   const val = input.value.trim();
   if (!val) return;
-
   const inRoomUser = roomState.users.find(u =>
     u.userId === val || u.peerId === val || u.name.toLowerCase() === val.toLowerCase()
   );
-  const inDbUser = Object.values(usersDirectory).find(u =>
-    u.userId === val || u.peerId === val || u.name.toLowerCase() === val.toLowerCase()
-  );
-
   if (inRoomUser) {
     sendFriendRequest(inRoomUser);
-  } else if (inDbUser) {
-    sendFriendRequest(inDbUser);
   } else if (val.startsWith('u_')) {
     sendFriendRequest({ userId: val, name: val });
   } else {
@@ -631,13 +543,6 @@ document.getElementById('save-profile-btn').onclick = () => {
     avatar: finalAvatar
   };
   localStorage.setItem('cobrowser_user', JSON.stringify(currentUser));
-  registerKnownUser({
-    userId: currentUser.id,
-    peerId: peer?.id || '',
-    name: currentUser.name,
-    avatar: currentUser.avatar,
-    roomId: roomState.id || ''
-  });
 
   if (pendingInviteRoom) {
     const roomToJoin = pendingInviteRoom;
@@ -845,7 +750,6 @@ function startRoom(roomId, createAsHost) {
   peer.on('open', (myPeerId) => {
     setConnStatus('● онлайн', 'ok');
     const me = buildMePayload(myPeerId);
-    registerKnownUser({ ...me, roomId });
 
     if (createAsHost) {
       roomState.hostPeerId = myPeerId;
@@ -881,7 +785,6 @@ function startRoom(roomId, createAsHost) {
     conn.on('data', (msg) => {
       if (!msg || msg.type === 'ping' || msg.type === 'pong') return;
       if (msg.type === 'friend-request') {
-        if (msg.from) registerKnownUser({ ...msg.from, roomId: msg.from.roomId || roomState.id || '' });
         if (isHost() && (msg.toUserId || msg.toPeerId)) {
           const target = roomState.users.find(u =>
             (msg.toUserId && u.userId === msg.toUserId) ||
@@ -898,7 +801,6 @@ function startRoom(roomId, createAsHost) {
         return;
       }
       if (msg.type === 'friend-accept') {
-        if (msg.from) registerKnownUser({ ...msg.from, roomId: msg.from.roomId || roomState.id || '' });
         if (isHost() && (msg.toUserId || msg.toPeerId)) {
           const target = roomState.users.find(u =>
             (msg.toUserId && u.userId === msg.toUserId) ||
@@ -975,7 +877,6 @@ function handleMessageAtHost(fromPeerId, msg) {
       ...msg.user,
       avatar: getValidAvatar(msg.user.avatar, msg.user.name || msg.user.userId)
     };
-    registerKnownUser({ ...cleanUser, roomId: roomState.id || '' });
     const idx = roomState.users.findIndex(u => u.peerId === cleanUser.peerId);
     if (idx >= 0) {
       roomState.users[idx] = cleanUser;
@@ -991,7 +892,6 @@ function handleMessageAtHost(fromPeerId, msg) {
       avatar: getValidAvatar(msg.sender?.avatar, msg.sender?.name || msg.sender?.userId),
       isHost: msg.sender?.peerId === roomState.hostPeerId
     };
-    registerKnownUser({ ...senderObj, roomId: roomState.id || '' });
     const payload = { type: 'chat', sender: senderObj, text: msg.text };
     broadcastRaw(payload);
     appendChatMessage(senderObj, msg.text);
@@ -1020,12 +920,8 @@ function handleMessageAtHost(fromPeerId, msg) {
 function handleMessageFromHost(msg) {
   if (msg.type === 'state') {
     roomState = msg.state;
-    if (Array.isArray(roomState.users)) {
-      roomState.users.forEach(u => registerKnownUser({ ...u, roomId: roomState.id || '' }));
-    }
     updateUI();
   } else if (msg.type === 'chat') {
-    if (msg.sender) registerKnownUser({ ...msg.sender, roomId: roomState.id || '' });
     appendChatMessage(msg.sender, msg.text);
   } else if (msg.type === 'system') {
     addSystemMessage(msg.text);
@@ -1357,7 +1253,7 @@ function renderUsers() {
     const isSelf = (peer && u.peerId === peer.id) || (currentUser && u.userId === currentUser.id);
 
     const img = document.createElement('img');
-    img.src = resolveUserAvatar(u);
+    img.src = getValidAvatar(u.avatar, u.name || u.userId);
 
     const nameSpan = document.createElement('span');
     nameSpan.className = 'name';
@@ -1586,7 +1482,7 @@ function appendChatMessage(sender, text) {
 
   const img = document.createElement('img');
   img.className = 'msg-avatar';
-  img.src = resolveUserAvatar(senderObj);
+  img.src = getValidAvatar(senderObj.avatar, senderObj.name || senderObj.userId);
   img.alt = senderObj.name || '';
 
   const body = document.createElement('div');
@@ -1639,13 +1535,6 @@ const inviteRoomFromUrl = new URLSearchParams(window.location.search).get('room'
 
 if (currentUser && currentUser.name) {
   currentUser.avatar = getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name);
-  registerKnownUser({
-    userId: currentUser.id,
-    peerId: '',
-    name: currentUser.name,
-    avatar: currentUser.avatar,
-    roomId: inviteRoomFromUrl ? inviteRoomFromUrl.toUpperCase() : ''
-  });
   if (inviteRoomFromUrl) {
     startRoom(inviteRoomFromUrl.toUpperCase(), false);
   } else {
@@ -1656,3 +1545,210 @@ if (currentUser && currentUser.name) {
   updateAvatarPreview();
   showScreen('profile');
 }
+
+
+// ================= SUPABASE: ДРУЗЬЯ И ЛИЧНЫЕ СООБЩЕНИЯ =================
+const COBROWSER_SUPABASE_URL = 'https://dtrihjdxpwpahhpozxlo.supabase.co';
+const COBROWSER_SUPABASE_KEY = 'sb_publishable_Nc3Ce_vjJnB03BOMGQIydQ_8oJwRmtw';
+let cbSupabase = null;
+let cbAuthUser = null;
+let cbProfile = null;
+let cbSelectedFriend = null;
+let cbRealtime = [];
+
+function cbNotice(message) { alert(message); }
+function cbPublicId() {
+  if (!currentUser.id || !String(currentUser.id).startsWith('u_')) {
+    currentUser.id = 'u_' + Math.random().toString(36).slice(2, 10);
+  }
+  return currentUser.id;
+}
+async function cbInit() {
+  try {
+    if (!window.supabase?.createClient) throw new Error('Не загрузилась библиотека Supabase.');
+    cbSupabase = window.supabase.createClient(COBROWSER_SUPABASE_URL, COBROWSER_SUPABASE_KEY);
+    let { data: sessionData, error } = await cbSupabase.auth.getSession();
+    if (error) throw error;
+    if (!sessionData.session) {
+      const signed = await cbSupabase.auth.signInAnonymously();
+      if (signed.error) throw signed.error;
+      sessionData = { session: signed.data.session };
+    }
+    cbAuthUser = sessionData.session.user;
+    if (currentUser?.name) await cbEnsureProfile();
+    await cbLoadSocial();
+    cbSubscribeSocial();
+    cbSetSocialStatus('Подключено к синхронизации');
+  } catch (e) {
+    console.error('CoBrowser Supabase:', e);
+    cbSetSocialStatus('Ошибка подключения: ' + (e.message || e));
+  }
+}
+function cbSetSocialStatus(message) {
+  const el = document.getElementById('social-status');
+  if (el) el.textContent = message;
+}
+async function cbEnsureProfile() {
+  if (!cbSupabase || !cbAuthUser || !currentUser?.name) return;
+  const public_id = cbPublicId();
+  const profile = {
+    id: cbAuthUser.id, public_id,
+    name: currentUser.name,
+    avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name)
+  };
+  const { data, error } = await cbSupabase.from('profiles')
+    .upsert(profile, { onConflict: 'id' }).select().single();
+  if (error) throw error;
+  cbProfile = data;
+  currentUser.supabaseId = cbAuthUser.id;
+  localStorage.setItem('cobrowser_user', JSON.stringify(currentUser));
+  const idEl = document.getElementById('lobby-user-id');
+  if (idEl) idEl.textContent = public_id;
+}
+async function cbLoadSocial() {
+  if (!cbSupabase || !cbAuthUser) return;
+  const uid = cbAuthUser.id;
+  const [incoming, outgoing, links] = await Promise.all([
+    cbSupabase.from('friend_requests').select('id,sender_id,receiver_id,status,created_at').eq('receiver_id', uid).eq('status','pending'),
+    cbSupabase.from('friend_requests').select('id,sender_id,receiver_id,status,created_at').eq('sender_id', uid).eq('status','pending'),
+    cbSupabase.from('friendships').select('user_a,user_b').or(`user_a.eq.${uid},user_b.eq.${uid}`)
+  ]);
+  for (const r of [incoming,outgoing,links]) if (r.error) throw r.error;
+  const ids = [...new Set([
+    ...incoming.data.map(x=>x.sender_id), ...outgoing.data.map(x=>x.receiver_id),
+    ...links.data.map(x=>x.user_a===uid?x.user_b:x.user_a)
+  ])];
+  let profiles = [];
+  if (ids.length) {
+    const p = await cbSupabase.from('profiles').select('id,public_id,name,avatar').in('id', ids);
+    if (p.error) throw p.error;
+    profiles = p.data;
+  }
+  const byId = new Map(profiles.map(p=>[p.id,p]));
+  friendRequests = incoming.data.map(r=>({...byId.get(r.sender_id), requestId:r.id, userId:byId.get(r.sender_id)?.public_id}));
+  outgoingRequests = outgoing.data.map(r=>({...byId.get(r.receiver_id), requestId:r.id}));
+  friendsList = links.data.map(r=>byId.get(r.user_a===uid?r.user_b:r.user_a)).filter(Boolean)
+    .map(p=>({userId:p.public_id,name:p.name,avatar:p.avatar,supabaseId:p.id}));
+  renderFriendRequests(); renderFriends();
+  const count = document.getElementById('friends-count');
+  if (count) count.textContent = friendsList.length;
+  cbRenderDmFriends();
+}
+async function cbSubscribeSocial() {
+  if (!cbSupabase || !cbAuthUser) return;
+  cbRealtime.forEach(ch=>cbSupabase.removeChannel(ch));
+  const uid = cbAuthUser.id;
+  const channel = cbSupabase.channel('cobrowser-social-'+uid)
+    .on('postgres_changes',{event:'*',schema:'public',table:'friend_requests',filter:`receiver_id=eq.${uid}`}, async()=>{await cbLoadSocial();})
+    .on('postgres_changes',{event:'*',schema:'public',table:'friendships'}, async()=>{await cbLoadSocial();})
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'direct_messages',filter:`receiver_id=eq.${uid}`}, payload=>{
+      if (cbSelectedFriend && payload.new.sender_id===cbSelectedFriend.supabaseId) cbLoadDirectMessages();
+      cbSetSocialStatus('Новое личное сообщение');
+    }).subscribe();
+  cbRealtime=[channel];
+}
+async function cbSendFriendRequest(value) {
+  if (!cbSupabase || !cbAuthUser) return cbNotice('Подключение к базе ещё не готово. Обнови страницу.');
+  await cbEnsureProfile();
+  const term=value.trim();
+  if (!term) return;
+  const {data:target,error}=await cbSupabase.from('profiles').select('id,public_id,name,avatar')
+    .or(`public_id.eq.${term.replace(/[(),]/g,'')},name.ilike.${term.replace(/[%,]/g,'')}`).limit(2);
+  if(error) return cbNotice('Не удалось найти пользователя: '+error.message);
+  if(!target?.length) return cbNotice('Пользователь не найден. Попроси его прислать свой ID из профиля.');
+  if(target.length>1) return cbNotice('Нашлось несколько пользователей с таким ником. Введи точный ID.');
+  const p=target[0];
+  if(p.id===cbAuthUser.id) return cbNotice('Нельзя добавить самого себя.');
+  const {data:existing}=await cbSupabase.from('friendships').select('user_a').or(`and(user_a.eq.${cbAuthUser.id},user_b.eq.${p.id}),and(user_a.eq.${p.id},user_b.eq.${cbAuthUser.id})`).maybeSingle();
+  if(existing) return cbNotice('Вы уже друзья.');
+  const {error:insertError}=await cbSupabase.from('friend_requests').insert({sender_id:cbAuthUser.id,receiver_id:p.id});
+  if(insertError) {
+    if(insertError.code==='23505') return cbNotice('Заявка этому пользователю уже отправлена.');
+    return cbNotice('Не удалось отправить заявку: '+insertError.message);
+  }
+  await cbLoadSocial();
+  cbNotice('Заявка отправлена пользователю '+p.name+'.');
+}
+async function cbAcceptRequest(requestId) {
+  const {error}=await cbSupabase.from('friend_requests').update({status:'accepted'}).eq('id',requestId).eq('receiver_id',cbAuthUser.id);
+  if(error) return cbNotice('Ошибка принятия заявки: '+error.message);
+  await cbLoadSocial();
+}
+async function cbDeclineRequest(requestId) {
+  const {error}=await cbSupabase.from('friend_requests').update({status:'declined'}).eq('id',requestId).eq('receiver_id',cbAuthUser.id);
+  if(error) return cbNotice('Ошибка: '+error.message);
+  await cbLoadSocial();
+}
+function cbInstallDmUI() {
+  const panel=document.createElement('div');
+  panel.id='personal-chat-panel';
+  panel.className='personal-chat-panel';
+  panel.innerHTML=`<h3>Личные сообщения</h3><div class="dm-layout"><div id="dm-friends" class="dm-friends"><p class="friend-sub">Добавь друга, чтобы начать переписку</p></div><div class="dm-conversation"><div id="dm-title" class="dm-title">Выбери друга</div><div id="dm-messages" class="dm-messages"></div><form id="dm-form" class="dm-form"><input id="dm-input" maxlength="2000" placeholder="Личное сообщение..." autocomplete="off"><button type="submit">➤</button></form></div></div>`;
+  const friendsPanel=document.getElementById('lobby-tab-friends');
+  if(friendsPanel) friendsPanel.appendChild(panel);
+  const style=document.createElement('style');
+  style.textContent=`#social-status{font-size:.75rem;color:var(--muted);margin-top:.5rem}.personal-chat-panel{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--border,#444)}.dm-layout{display:grid;grid-template-columns:minmax(110px, .7fr) 1.5fr;gap:.7rem;min-height:260px}.dm-friends,.dm-conversation{min-width:0;border:1px solid var(--border,#444);border-radius:10px;padding:.5rem}.dm-friend{display:block;width:100%;text-align:left;margin:.2rem 0;padding:.55rem;border:0;border-radius:7px;background:var(--surface-2,#333);color:inherit;cursor:pointer}.dm-friend.active{outline:2px solid var(--accent,#7c8cff)}.dm-title{font-weight:600;padding:.35rem;border-bottom:1px solid var(--border,#444)}.dm-messages{height:190px;overflow:auto;padding:.5rem}.dm-message{padding:.35rem .5rem;margin:.3rem 0;border-radius:8px;background:var(--surface-2,#333);overflow-wrap:anywhere}.dm-message.mine{margin-left:12%;background:var(--accent-soft,#343b58)}.dm-form{display:flex;gap:.4rem}.dm-form input{min-width:0;flex:1}@media(max-width:600px){.dm-layout{grid-template-columns:1fr}.dm-friends{max-height:110px;overflow:auto}.dm-messages{height:160px}}`;
+  document.head.appendChild(style);
+  document.getElementById('dm-form').onsubmit=async e=>{
+    e.preventDefault(); const input=document.getElementById('dm-input'); const body=input.value.trim();
+    if(!body||!cbSelectedFriend) return;
+    const {error}=await cbSupabase.from('direct_messages').insert({sender_id:cbAuthUser.id,receiver_id:cbSelectedFriend.supabaseId,body});
+    if(error) return cbNotice('Не удалось отправить сообщение: '+error.message);
+    input.value=''; await cbLoadDirectMessages();
+  };
+}
+function cbRenderDmFriends() {
+  const el=document.getElementById('dm-friends'); if(!el)return;
+  el.innerHTML='';
+  if(!friendsList.length){el.innerHTML='<p class="friend-sub">Пока нет друзей</p>';return;}
+  friendsList.forEach(f=>{
+    const b=document.createElement('button'); b.className='dm-friend'+(cbSelectedFriend?.supabaseId===f.supabaseId?' active':'');
+    b.textContent=f.name; b.onclick=()=>{cbSelectedFriend=f;cbRenderDmFriends();cbLoadDirectMessages();};
+    el.appendChild(b);
+  });
+}
+async function cbLoadDirectMessages() {
+  if(!cbSelectedFriend||!cbSupabase)return;
+  document.getElementById('dm-title').textContent='Переписка с '+cbSelectedFriend.name;
+  const uid=cbAuthUser.id, other=cbSelectedFriend.supabaseId;
+  const {data,error}=await cbSupabase.from('direct_messages').select('id,sender_id,receiver_id,body,created_at')
+    .or(`and(sender_id.eq.${uid},receiver_id.eq.${other}),and(sender_id.eq.${other},receiver_id.eq.${uid})`)
+    .order('created_at',{ascending:true}).limit(300);
+  if(error){cbSetSocialStatus('Ошибка загрузки переписки: '+error.message);return;}
+  const el=document.getElementById('dm-messages');el.innerHTML='';
+  (data||[]).forEach(m=>{const d=document.createElement('div');d.className='dm-message'+(m.sender_id===uid?' mine':'');d.textContent=m.body;el.appendChild(d);});
+  el.scrollTop=el.scrollHeight;
+}
+function cbOverrideFriendUI() {
+  const add=document.getElementById('add-friend-manual-btn');
+  if(add)add.onclick=async()=>{const input=document.getElementById('friend-name-input');await cbSendFriendRequest(input.value);input.value='';};
+  window.acceptFriendRequest=cbAcceptRequest;
+  // Existing renderers are replaced so database request IDs are used.
+  window.renderFriendRequests=function(){
+    const list=document.getElementById('friend-requests-list'), count=document.getElementById('requests-count'), badge=document.getElementById('friend-req-badge');
+    if(!list)return;count.textContent=friendRequests.length;badge.textContent=friendRequests.length;badge.classList.toggle('hidden',!friendRequests.length);list.innerHTML='';
+    if(!friendRequests.length){list.innerHTML='<li class="friend-sub">Входящих предложений пока нет</li>';return;}
+    friendRequests.forEach(r=>{const li=document.createElement('li');li.className='friend-item';const meta=document.createElement('div');meta.className='friend-meta';const n=document.createElement('div');n.className='friend-name';n.textContent=r.name;const sub=document.createElement('div');sub.className='friend-sub';sub.textContent='ID: '+r.public_id;meta.append(n,sub);const actions=document.createElement('div');actions.className='friend-actions';const ok=document.createElement('button');ok.className='btn-primary btn-small';ok.textContent='Принять';ok.onclick=()=>cbAcceptRequest(r.requestId);const no=document.createElement('button');no.className='btn-secondary btn-small';no.textContent='✕';no.onclick=()=>cbDeclineRequest(r.requestId);actions.append(ok,no);li.append(meta,actions);list.append(li);});
+  };
+  window.renderFriends=function(){
+    const list=document.getElementById('friends-list'),count=document.getElementById('friends-count');if(!list)return;count.textContent=friendsList.length;list.innerHTML='';
+    if(!friendsList.length){list.innerHTML='<li class="friend-sub">Пока нет друзей</li>';return;}
+    friendsList.forEach(f=>{const li=document.createElement('li');li.className='friend-item';const meta=document.createElement('div');meta.className='friend-meta';const n=document.createElement('div');n.className='friend-name';n.textContent=f.name;const sub=document.createElement('div');sub.className='friend-sub';sub.textContent='ID: '+f.userId;meta.append(n,sub);li.append(meta);list.append(li);});
+  };
+}
+async function cbRefreshProfile() {
+  if(!cbSupabase||!cbAuthUser)return;
+  try { await cbEnsureProfile(); await cbLoadSocial(); } catch(e){console.error(e);cbSetSocialStatus('Ошибка профиля: '+e.message);}
+}
+cbInstallDmUI();
+cbOverrideFriendUI();
+const socialStatus=document.createElement('div');socialStatus.id='social-status';socialStatus.textContent='Подключение...';
+document.querySelector('.user-badge')?.after(socialStatus);
+const originalSaveProfile=document.getElementById('save-profile-btn').onclick;
+document.getElementById('save-profile-btn').onclick=async function(){
+  if(originalSaveProfile) originalSaveProfile();
+  // Дождаться анонимной авторизации и сохранить публичный профиль в облако.
+  for(let i=0;i<30&&!cbAuthUser;i++) await new Promise(r=>setTimeout(r,200));
+  if(cbAuthUser) await cbRefreshProfile();
+};
+cbInit();
