@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CoBrowser — Смотрим вместе</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body>
+
+  <!-- ЭКРАН 1: СОЗДАНИЕ ПРОФИЛЯ -->
+  <div id="profile-screen" class="screen active">
+    <div class="card">
+      <h1>CoBrowser</h1>
+      <p class="subtitle">Общий браузер для совместного просмотра</p>
+
+      <div class="avatar-preview">
+        <img id="avatar-img" src="https://api.dicebear.com/7.x/bottts/svg?seed=Guest" alt="Аватар">
+        <button type="button" id="random-avatar-btn" class="btn-secondary">Сменить аватар</button>
+      </div>
+
+      <input type="text" id="username-input" placeholder="Придумай никнейм..." maxlength="20">
+      <button id="save-profile-btn" class="btn-primary">Продолжить</button>
+    </div>
+  </div>
+
+  <!-- ЭКРАН 2: ЛОББИ -->
+  <div id="lobby-screen" class="screen">
+    <div class="card">
+      <div class="user-badge">
+        <img id="lobby-avatar" src="" alt="">
+        <span id="lobby-username"></span>
+        <button id="edit-profile-btn" class="btn-link">Изменить</button>
+      </div>
+
+      <h2>Комната просмотра</h2>
+      <button id="create-room-btn" class="btn-primary">Создать комнату (Я Главный)</button>
+
+      <div class="divider">или войти по коду</div>
+
+      <div class="join-row">
+        <input type="text" id="room-code-input" placeholder="Код комнаты...">
+        <button id="join-room-btn" class="btn-secondary">Войти</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ЭКРАН 3: КОМНАТА -->
+  <div id="room-screen" class="screen">
+    <header class="topbar">
+      <div class="room-info">
+        <span class="badge-host" id="role-badge">👑 Вы Главный</span>
+        <span>Комната: <strong id="current-room-id"></strong></span>
+        <button id="copy-invite-btn" class="btn-small btn-secondary">Копировать ссылку</button>
+      </div>
+
+      <div class="browser-connect">
+        <input type="text" id="neko-url-input" placeholder="URL виртуального браузера или сайта...">
+        <button id="connect-browser-btn" class="btn-primary btn-small">Открыть всем</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <div class="browser-container">
+        <div id="browser-placeholder" class="placeholder">
+          <h3>Встроенный браузер готов</h3>
+          <p>Вставь адрес виртуального браузера (например, Neko) или любого сайта вверху и нажми «Открыть всем».</p>
+          <button id="demo-browser-btn" class="btn-secondary">Тест: Wikipedia</button>
+        </div>
+        <iframe id="virtual-browser-frame" allow="autoplay; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
+        <div id="viewer-shield" class="viewer-shield hidden" title="Управление сейчас у другого участника"></div>
+      </div>
+
+      <aside class="sidebar">
+        <div class="panel-section">
+          <h4>Участники (<span id="users-count">1</span>)</h4>
+          <ul id="users-list" class="users-list"></ul>
+        </div>
+
+        <div class="panel-section chat-section">
+          <h4>Чат комнаты</h4>
+          <div id="chat-messages" class="chat-messages"></div>
+          <form id="chat-form" class="chat-form">
+            <input type="text" id="chat-input" placeholder="Сообщение..." autocomplete="off">
+            <button type="submit">➤</button>
+          </form>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
