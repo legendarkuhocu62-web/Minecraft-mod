@@ -15,8 +15,8 @@ let roomState = {
   controllerPeerId: null,
   ruMode: false,
   videoFocus: false,
-  vfZoom: 135,
-  vfY: -40,
+  vfZoom: 130,
+  vfY: -30,
   mode: 'search', // 'search' | 'frame'
   query: '',
   browserUrl: '',
@@ -298,6 +298,7 @@ function handleMessageAtHost(fromPeerId, msg) {
     roomState.query = msg.query || '';
     roomState.browserUrl = msg.url || '';
     if (typeof msg.ruMode === 'boolean') roomState.ruMode = msg.ruMode;
+    if (roomState.mode !== 'frame') roomState.videoFocus = false;
     broadcastState();
     updateUI();
   } else if (msg.type === 'ru-mode' && fromPeerId === roomState.controllerPeerId) {
@@ -385,15 +386,21 @@ function updateRuModeUI() {
     : 'Введите запрос для поиска в Google или адрес сайта';
 }
 
-// --- ФОКУС НА ВИДЕО (УВЕЛИЧЕНИЕ/ОБРЕЗКА САЙТА БЕЗ ОБРЕЗКИ ЧАТА) ---
+// --- ФОКУС НА ВИДЕО (ТОЛЬКО КОГДА ОТКРЫТ САЙТ, КНОПКИ В ШАПКЕ) ---
 const workspaceEl = document.getElementById('workspace');
 const browserBox = document.getElementById('browser-container');
+const siteViewActions = document.getElementById('site-view-actions');
 const videoFocusBtn = document.getElementById('video-focus-btn');
 const expandBrowserBtn = document.getElementById('expand-browser-btn');
+const exitExpandBtn = document.getElementById('exit-expand-btn');
 const videoCropBar = document.getElementById('video-crop-bar');
 const vfZoomInput = document.getElementById('vf-zoom');
 const vfYInput = document.getElementById('vf-y');
 const vfZoomVal = document.getElementById('vf-zoom-val');
+
+function isSiteOpened() {
+  return roomState.mode === 'frame' && Boolean(roomState.browserUrl);
+}
 
 function syncVideoFocusPayload(patch) {
   if (isHost()) {
@@ -406,12 +413,13 @@ function syncVideoFocusPayload(patch) {
 }
 
 videoFocusBtn.onclick = () => {
+  if (!isSiteOpened()) return;
   const nextFocus = !roomState.videoFocus;
   if (isHost() || hasControl()) {
     syncVideoFocusPayload({
       videoFocus: nextFocus,
-      vfZoom: roomState.vfZoom || 135,
-      vfY: typeof roomState.vfY === 'number' ? roomState.vfY : -40
+      vfZoom: roomState.vfZoom || 130,
+      vfY: typeof roomState.vfY === 'number' ? roomState.vfY : -30
     });
   } else {
     roomState.videoFocus = nextFocus;
@@ -441,9 +449,20 @@ vfYInput.oninput = () => {
 };
 
 function applyVideoFocusUI() {
-  const active = Boolean(roomState.videoFocus);
-  const zoom = Number(roomState.vfZoom || 135);
-  const y = Number(roomState.vfY ?? -40);
+  const opened = isSiteOpened();
+  siteViewActions.classList.toggle('hidden', !opened);
+
+  if (!opened && roomState.videoFocus) {
+    roomState.videoFocus = false;
+  }
+  if (!opened && browserBox.classList.contains('expanded')) {
+    browserBox.classList.remove('expanded');
+    exitExpandBtn.classList.add('hidden');
+  }
+
+  const active = Boolean(roomState.videoFocus) && opened;
+  const zoom = Number(roomState.vfZoom || 130);
+  const y = Number(roomState.vfY ?? -30);
 
   vfZoomInput.value = zoom;
   vfYInput.value = y;
@@ -463,8 +482,14 @@ function applyVideoFocusUI() {
 }
 
 expandBrowserBtn.onclick = () => {
-  const expanded = browserBox.classList.toggle('expanded');
-  expandBrowserBtn.textContent = expanded ? '✕ Свернуть' : '⛶ На весь экран';
+  if (!isSiteOpened()) return;
+  browserBox.classList.add('expanded');
+  exitExpandBtn.classList.remove('hidden');
+};
+
+exitExpandBtn.onclick = () => {
+  browserBox.classList.remove('expanded');
+  exitExpandBtn.classList.add('hidden');
 };
 
 function updateUI() {
@@ -648,6 +673,7 @@ function sendNavigation(nextState) {
   if (isHost()) {
     roomState = { ...roomState, ...nextState };
     applyBrowserState();
+    applyVideoFocusUI();
     broadcastState();
   } else if (hasControl() && hostConn && hostConn.open) {
     hostConn.send({ type: 'nav', ...nextState });
@@ -657,15 +683,15 @@ function sendNavigation(nextState) {
 function handleSearchOrOpen(rawValue, openGoogleImmediately = false) {
   const val = (rawValue || '').trim();
   if (!val) {
-    sendNavigation({ mode: 'search', query: '', browserUrl: '' });
+    sendNavigation({ mode: 'search', query: '', browserUrl: '', videoFocus: false });
     return;
   }
 
   if (isDirectUrl(val)) {
     const url = toFullUrl(val);
-    sendNavigation({ mode: 'frame', query: val, browserUrl: url });
+    sendNavigation({ mode: 'frame', query: val, browserUrl: url, videoFocus: false });
   } else {
-    sendNavigation({ mode: 'search', query: val, browserUrl: '' });
+    sendNavigation({ mode: 'search', query: val, browserUrl: '', videoFocus: false });
     if (openGoogleImmediately) {
       window.open(buildGoogleSearchUrl(val), '_blank', 'noopener,noreferrer');
     }

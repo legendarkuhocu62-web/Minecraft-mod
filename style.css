@@ -63,6 +63,13 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
   color: #ffffff;
 }
 
+.site-view-actions {
+  display: inline-flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;
+}
+.site-view-actions .active-focus {
+  background: var(--green); color: #052e16;
+}
+
 .modal {
   position: fixed; inset: 0; background: rgba(0,0,0,0.78); z-index: 100;
   display: flex; align-items: center; justify-content: center; padding: 1rem;
@@ -94,7 +101,7 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 
 .topbar {
   min-height: 56px; background: var(--surface); border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 1rem; gap: 0.75rem; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: space-between; padding: 0.55rem 1rem; gap: 0.75rem; flex-wrap: wrap;
 }
 .room-info, .browser-connect { display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; }
 .browser-connect input { width: 260px; padding: 0.45rem 0.75rem; font-size: 0.85rem; }
@@ -109,17 +116,10 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
   position: fixed; inset: 0; z-index: 90;
   height: 100vh; width: 100vw; max-width: 100vw; min-height: 100vh; border-radius: 0;
 }
-
-.view-toolbar {
-  position: absolute; top: 10px; right: 10px; z-index: 35;
-  display: flex; gap: 0.45rem;
-}
-.view-toolbar button {
-  background: rgba(15, 17, 21, 0.86); border: 1px solid var(--border);
-  backdrop-filter: blur(6px);
-}
-.view-toolbar .btn-primary.active-focus {
-  background: var(--green); color: #052e16; border-color: var(--green);
+.exit-expand-btn {
+  position: fixed; top: 12px; right: 12px; z-index: 95;
+  background: rgba(15, 17, 21, 0.9); border: 1px solid var(--border);
+  padding: 0.45rem 0.8rem; font-size: 0.8rem; border-radius: 8px;
 }
 
 .video-crop-bar {
@@ -137,11 +137,10 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 .browser-container iframe {
   width: 100%; height: 100%; min-height: 78vh;
   border: none; background: #fff; display: block;
-  transform-origin: center center; transition: transform 0.15s ease-out;
+  transform-origin: center top; transition: transform 0.15s ease-out;
 }
 .browser-container.expanded iframe { height: 100vh; min-height: 100vh; }
 
-/* Режим фокуса на видео: увеличиваем видео и обрезаем лишние края сайта, но оставляем чат видимым */
 .workspace.video-focus {
   flex-direction: column;
   height: 100vh;

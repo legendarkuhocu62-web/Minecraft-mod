@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -92,6 +91,12 @@
           <span class="ru-label">🇷🇺 Для России</span>
           <button type="button" id="ru-toggle-btn" class="ru-switch" aria-pressed="false">Выкл</button>
         </div>
+
+        <!-- ПОЯВЛЯЮТСЯ СВЕРХУ ТОЛЬКО КОГДА ОТКРЫТ САЙТ -->
+        <div id="site-view-actions" class="site-view-actions hidden">
+          <button type="button" id="video-focus-btn" class="btn-small btn-primary">🎬 Фокус на видео</button>
+          <button type="button" id="expand-browser-btn" class="btn-small btn-secondary">⛶ На весь экран</button>
+        </div>
       </div>
 
       <div class="browser-connect">
@@ -103,17 +108,14 @@
 
     <main id="workspace" class="workspace">
       <div id="browser-container" class="browser-container">
-        <div class="view-toolbar">
-          <button type="button" id="video-focus-btn" class="btn-small btn-primary">🎬 Фокус на видео</button>
-          <button type="button" id="expand-browser-btn" class="btn-small btn-secondary">⛶ На весь экран</button>
-        </div>
+        <button type="button" id="exit-expand-btn" class="exit-expand-btn hidden">✕ Свернуть</button>
 
         <div id="video-crop-bar" class="video-crop-bar hidden">
-          <label>Зум: <span id="vf-zoom-val">135%</span>
-            <input type="range" id="vf-zoom" min="100" max="220" value="135">
+          <label>Зум: <span id="vf-zoom-val">130%</span>
+            <input type="range" id="vf-zoom" min="100" max="200" value="130">
           </label>
           <label>Сдвиг вверх/вниз:
-            <input type="range" id="vf-y" min="-180" max="180" value="-40">
+            <input type="range" id="vf-y" min="-150" max="150" value="-30">
           </label>
         </div>
 
@@ -155,3 +157,4 @@
   <script src="app.js"></script>
 </body>
 </html>
+
