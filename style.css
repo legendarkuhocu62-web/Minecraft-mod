@@ -1,3 +1,4 @@
+
 :root {
   --bg: #0f1115;
   --surface: #181b22;
@@ -39,7 +40,6 @@ input[type="text"] {
   padding: 0.75rem 1rem; border-radius: 10px; font-size: 0.95rem; outline: none; width: 100%;
 }
 input[type="text"]:focus { border-color: var(--primary); }
-input[type="range"] { width: 100%; accent-color: var(--primary); }
 
 button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; transition: 0.15s; color: var(--text); }
 .btn-primary { background: var(--primary); color: #fff; padding: 0.8rem 1.2rem; }
@@ -155,13 +155,17 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 .focus-header-strip {
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
   padding: 0.4rem 0.75rem; background: var(--surface); border-bottom: 1px solid var(--border);
-  z-index: 32;
+  z-index: 32; flex-wrap: wrap;
 }
 .focus-title { font-size: 0.78rem; color: var(--muted); }
-.focus-strip-btns { display: flex; gap: 0.4rem; }
+.focus-strip-btns { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 
 .iframe-crop-wrap {
   flex: 1; width: 100%; height: 100%; position: relative; overflow: hidden;
+}
+.iframe-stage {
+  width: 100%; height: 100%; position: relative; overflow: hidden;
+  transform-origin: top left;
 }
 .browser-container iframe {
   width: 100%; height: 100%; min-height: 78vh;
@@ -169,15 +173,16 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 }
 .browser-container.expanded iframe { height: 100vh; min-height: 100vh; }
 
+/* Рамка кадрирования с уголками */
 .crop-overlay {
   position: absolute; inset: 0; z-index: 25;
   pointer-events: none;
 }
 .crop-box {
   position: absolute;
-  left: 4%; top: 12%; width: 92%; height: 68%;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.52);
-  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  left: 4%; top: 18%; width: 92%; height: 42%;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.58);
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
   pointer-events: none;
   touch-action: none;
 }
@@ -187,7 +192,7 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
   touch-action: none;
 }
 .crop-corner {
-  width: 22px; height: 22px;
+  width: 24px; height: 24px;
   border-color: #ffffff;
   border-style: solid;
   border-width: 0;
@@ -197,10 +202,10 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
 .crop-corner.bl { left: -3px; bottom: -3px; border-left-width: 4px; border-bottom-width: 4px; cursor: nesw-resize; }
 .crop-corner.br { right: -3px; bottom: -3px; border-right-width: 4px; border-bottom-width: 4px; cursor: nwse-resize; }
 
-.crop-edge.t { left: 22px; right: 22px; top: -4px; height: 10px; cursor: ns-resize; }
-.crop-edge.b { left: 22px; right: 22px; bottom: -4px; height: 10px; cursor: ns-resize; }
-.crop-edge.l { top: 22px; bottom: 22px; left: -4px; width: 10px; cursor: ew-resize; }
-.crop-edge.r { top: 22px; bottom: 22px; right: -4px; width: 10px; cursor: ew-resize; }
+.crop-edge.t { left: 24px; right: 24px; top: -4px; height: 10px; cursor: ns-resize; }
+.crop-edge.b { left: 24px; right: 24px; bottom: -4px; height: 10px; cursor: ns-resize; }
+.crop-edge.l { top: 24px; bottom: 24px; left: -4px; width: 10px; cursor: ew-resize; }
+.crop-edge.r { top: 24px; bottom: 24px; right: -4px; width: 10px; cursor: ew-resize; }
 
 .workspace.video-focus {
   flex-direction: column;
@@ -294,4 +299,3 @@ button { cursor: pointer; border: none; border-radius: 10px; font-weight: 600; t
   .workspace:not(.video-focus) .sidebar { width: 100%; border-left: none; border-top: 1px solid var(--border); min-height: 360px; }
   .browser-connect input { width: 100%; }
 }
-

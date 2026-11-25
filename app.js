@@ -5,6 +5,7 @@ let currentUser = JSON.parse(localStorage.getItem('cobrowser_user')) || null;
 let friendsList = JSON.parse(localStorage.getItem('cobrowser_friends')) || [];
 let avatarSeed = currentUser?.seed || Math.random().toString(36).substring(7);
 let pendingAvatarDataUrl = currentUser?.avatar || null;
+let pendingInviteRoom = null;
 
 let peer = null;
 let connections = new Map();
@@ -14,13 +15,16 @@ let reconnectTimer = null;
 let activeRoomId = null;
 let activeCreateAsHost = false;
 
+const DEFAULT_CROP = { left: 4, top: 18, width: 92, height: 42 };
+
 let roomState = {
   id: null,
   hostPeerId: null,
   controllerPeerId: null,
   ruMode: false,
   videoFocus: false,
-  cropRect: { left: 4, top: 12, width: 92, height: 68 },
+  cropApplied: false,
+  cropRect: { ...DEFAULT_CROP },
   mode: 'search', // 'search' | 'frame'
   query: '',
   browserUrl: '',
@@ -56,6 +60,10 @@ function hasControl() {
   return peer && roomState.controllerPeerId === peer.id;
 }
 
+function getMyUserId() {
+  return currentUser?.id || peer?.id || '';
+}
+
 // --- ДРУЗЬЯ ---
 function saveFriends() {
   localStorage.setItem('cobrowser_friends', JSON.stringify(friendsList));
@@ -67,19 +75,25 @@ function isFriend(userObj) {
   if (!userObj) return false;
   return friendsList.some(f =>
     (userObj.peerId && f.peerId === userObj.peerId) ||
+    (userObj.userId && f.userId === userObj.userId) ||
     (userObj.name && f.name.toLowerCase() === userObj.name.toLowerCase())
   );
 }
 
 function addFriend(userObj) {
-  if (!userObj || !userObj.name) return;
-  if (userObj.peerId && peer && userObj.peerId === peer.id) return;
+  if (!userObj) return;
+  const rawName = (userObj.name || '').trim();
+  const rawId = (userObj.userId || userObj.peerId || '').trim();
+  if (!rawName && !rawId) return;
+  if (rawId && (rawId === currentUser?.id || rawId === peer?.id)) return;
   if (isFriend(userObj)) return;
 
+  const displayName = rawName || rawId;
   friendsList.push({
+    userId: rawId,
     peerId: userObj.peerId || '',
-    name: userObj.name.trim(),
-    avatar: userObj.avatar || getGeneratedAvatarUrl(userObj.name),
+    name: displayName,
+    avatar: userObj.avatar || getGeneratedAvatarUrl(displayName),
     lastRoom: roomState.id || ''
   });
   saveFriends();
@@ -99,7 +113,7 @@ function renderFriends() {
   listEl.innerHTML = '';
 
   if (!friendsList.length) {
-    listEl.innerHTML = '<li class="friend-sub" style="padding:0.5rem">Список друзей пока пуст. Добавляй участников из комнаты или впиши имя выше.</li>';
+    listEl.innerHTML = '<li class="friend-sub" style="padding:0.5rem">Друзей пока нет. Нажми «+ Друг» у участника в комнате или вбей ник/ID выше.</li>';
     return;
   }
 
@@ -120,7 +134,9 @@ function renderFriends() {
 
     const subDiv = document.createElement('div');
     subDiv.className = 'friend-sub';
-    subDiv.textContent = f.lastRoom ? `Последняя комната: ${f.lastRoom}` : 'В списке друзей';
+    const idPart = f.userId ? `ID: ${f.userId}` : 'Без ID';
+    const roomPart = f.lastRoom ? ` · Комната: ${f.lastRoom}` : '';
+    subDiv.textContent = `${idPart}${roomPart}`;
 
     meta.appendChild(nameDiv);
     meta.appendChild(subDiv);
@@ -171,7 +187,11 @@ document.getElementById('add-friend-manual-btn').onclick = () => {
   const input = document.getElementById('friend-name-input');
   const val = input.value.trim();
   if (!val) return;
-  addFriend({ name: val });
+  if (val.startsWith('u_')) {
+    addFriend({ userId: val, name: val });
+  } else {
+    addFriend({ name: val });
+  }
   input.value = '';
 };
 
@@ -284,17 +304,24 @@ document.getElementById('apply-crop-btn').onclick = () => {
 
 document.getElementById('save-profile-btn').onclick = () => {
   const name = usernameInput.value.trim();
-  if (!name) return alert('Введи никнейм!');
+  if (!name) return alert('Введи свой никнейм!');
   const finalAvatar = pendingAvatarDataUrl || getGeneratedAvatarUrl(avatarSeed);
 
   currentUser = {
-    id: currentUser?.id || 'u_' + Date.now(),
+    id: currentUser?.id || ('u_' + Math.random().toString(36).substring(2, 8)),
     name,
     seed: avatarSeed,
     avatar: finalAvatar
   };
   localStorage.setItem('cobrowser_user', JSON.stringify(currentUser));
-  openLobby();
+
+  if (pendingInviteRoom) {
+    const roomToJoin = pendingInviteRoom;
+    pendingInviteRoom = null;
+    startRoom(roomToJoin, false);
+  } else {
+    openLobby();
+  }
 };
 
 document.getElementById('edit-profile-btn').onclick = () => {
@@ -305,18 +332,20 @@ document.getElementById('edit-profile-btn').onclick = () => {
   showScreen('profile');
 };
 
+document.getElementById('copy-my-id-btn').onclick = () => {
+  const myId = getMyUserId();
+  if (!myId) return;
+  navigator.clipboard.writeText(myId).then(() => {
+    alert(`Твой ID скопирован: ${myId}`);
+  });
+};
+
 function openLobby() {
   document.getElementById('lobby-avatar').src = currentUser.avatar;
   document.getElementById('lobby-username').textContent = currentUser.name;
+  document.getElementById('lobby-user-id').textContent = getMyUserId();
   renderFriends();
-
-  const urlParams = new URLSearchParams(window.location.search);
-  const inviteRoom = urlParams.get('room');
-  if (inviteRoom) {
-    startRoom(inviteRoom.toUpperCase(), false);
-  } else {
-    showScreen('lobby');
-  }
+  showScreen('lobby');
 }
 
 // --- ВЫХОД В ГЛАВНОЕ МЕНЮ ---
@@ -337,7 +366,8 @@ function exitToMainMenu() {
     controllerPeerId: null,
     ruMode: false,
     videoFocus: false,
-    cropRect: { left: 4, top: 12, width: 92, height: 68 },
+    cropApplied: false,
+    cropRect: { ...DEFAULT_CROP },
     mode: 'search',
     query: '',
     browserUrl: '',
@@ -350,10 +380,7 @@ function exitToMainMenu() {
   document.getElementById('virtual-browser-frame').classList.add('hidden');
   document.getElementById('google-launcher').classList.remove('hidden');
 
-  document.getElementById('lobby-avatar').src = currentUser.avatar;
-  document.getElementById('lobby-username').textContent = currentUser.name;
-  renderFriends();
-  showScreen('lobby');
+  openLobby();
 }
 
 document.getElementById('exit-to-menu-btn').onclick = exitToMainMenu;
@@ -384,7 +411,12 @@ function clearRoomTimers() {
 function connectGuestToHost(roomId) {
   if (!peer || peer.destroyed || !currentUser) return;
   const hostPeerId = `${PEER_PREFIX}${roomId}`;
-  const me = { peerId: peer.id, name: currentUser.name, avatar: currentUser.avatar };
+  const me = {
+    peerId: peer.id,
+    userId: currentUser.id,
+    name: currentUser.name,
+    avatar: currentUser.avatar
+  };
 
   try {
     if (hostConn && hostConn.open) return;
@@ -483,7 +515,12 @@ function startRoom(roomId, createAsHost) {
 
   peer.on('open', (myPeerId) => {
     setConnStatus('● онлайн', 'ok');
-    const me = { peerId: myPeerId, name: currentUser.name, avatar: currentUser.avatar };
+    const me = {
+      peerId: myPeerId,
+      userId: currentUser.id,
+      name: currentUser.name,
+      avatar: currentUser.avatar
+    };
 
     if (createAsHost) {
       roomState.hostPeerId = myPeerId;
@@ -562,6 +599,7 @@ function getSenderMeta() {
   const myPeerId = peer?.id || 'local';
   return {
     peerId: myPeerId,
+    userId: currentUser.id,
     name: currentUser.name,
     avatar: currentUser.avatar,
     isHost: Boolean(isHost())
@@ -588,7 +626,10 @@ function handleMessageAtHost(fromPeerId, msg) {
     roomState.query = msg.query || '';
     roomState.browserUrl = msg.url || '';
     if (typeof msg.ruMode === 'boolean') roomState.ruMode = msg.ruMode;
-    if (roomState.mode !== 'frame') roomState.videoFocus = false;
+    if (roomState.mode !== 'frame') {
+      roomState.videoFocus = false;
+      roomState.cropApplied = false;
+    }
     broadcastState();
     updateUI();
   } else if (msg.type === 'ru-mode' && fromPeerId === roomState.controllerPeerId) {
@@ -676,7 +717,7 @@ function updateRuModeUI() {
     : 'Введите запрос для поиска в Google или адрес сайта';
 }
 
-// --- РАМКА КАДРИРОВАНИЯ С УГОЛКАМИ ---
+// --- РЕАЛЬНОЕ СРЕЗАНИЕ ПО РАМКЕ ---
 const workspaceEl = document.getElementById('workspace');
 const browserBox = document.getElementById('browser-container');
 const siteViewActions = document.getElementById('site-view-actions');
@@ -684,10 +725,12 @@ const videoFocusBtn = document.getElementById('video-focus-btn');
 const expandBrowserBtn = document.getElementById('expand-browser-btn');
 const exitExpandBtn = document.getElementById('exit-expand-btn');
 const focusHeaderStrip = document.getElementById('focus-header-strip');
+const focusStatusText = document.getElementById('focus-status-text');
+const applyCropCutBtn = document.getElementById('apply-crop-cut-btn');
+const editCropFrameBtn = document.getElementById('edit-crop-frame-btn');
 const cropOverlay = document.getElementById('crop-overlay');
 const cropBox = document.getElementById('crop-box');
-
-const DEFAULT_CROP = { left: 4, top: 12, width: 92, height: 68 };
+const iframeStage = document.getElementById('iframe-stage');
 
 function isSiteOpened() {
   return roomState.mode === 'frame' && Boolean(roomState.browserUrl);
@@ -708,14 +751,43 @@ function syncVideoFocusPayload(patch) {
 
 videoFocusBtn.onclick = () => {
   if (!isSiteOpened()) return;
+  if (!roomState.videoFocus) {
+    syncVideoFocusPayload({
+      videoFocus: true,
+      cropApplied: false,
+      cropRect: roomState.cropRect || { ...DEFAULT_CROP }
+    });
+  } else {
+    syncVideoFocusPayload({
+      videoFocus: false,
+      cropApplied: false
+    });
+  }
+};
+
+applyCropCutBtn.onclick = () => {
+  if (!isSiteOpened()) return;
   syncVideoFocusPayload({
-    videoFocus: !roomState.videoFocus,
+    videoFocus: true,
+    cropApplied: true,
     cropRect: roomState.cropRect || { ...DEFAULT_CROP }
   });
 };
 
+editCropFrameBtn.onclick = () => {
+  if (!isSiteOpened()) return;
+  syncVideoFocusPayload({
+    videoFocus: true,
+    cropApplied: false
+  });
+};
+
 document.getElementById('reset-crop-btn').onclick = () => {
-  syncVideoFocusPayload({ cropRect: { ...DEFAULT_CROP } });
+  syncVideoFocusPayload({
+    videoFocus: true,
+    cropApplied: false,
+    cropRect: { ...DEFAULT_CROP }
+  });
 };
 
 function renderCropBoxStyle() {
@@ -730,7 +802,7 @@ let dragInfo = null;
 
 cropOverlay.addEventListener('pointerdown', (e) => {
   const handle = e.target.dataset?.handle;
-  if (!handle || !roomState.videoFocus) return;
+  if (!handle || !roomState.videoFocus || roomState.cropApplied) return;
   e.preventDefault();
   const overlayRect = cropOverlay.getBoundingClientRect();
   dragInfo = {
@@ -752,20 +824,20 @@ window.addEventListener('pointermove', (e) => {
   const h = dragInfo.handle;
 
   if (h.includes('l')) {
-    const newLeft = Math.max(0, Math.min(left + width - 15, left + dxPct));
+    const newLeft = Math.max(0, Math.min(left + width - 12, left + dxPct));
     width = left + width - newLeft;
     left = newLeft;
   }
   if (h.includes('r')) {
-    width = Math.max(15, Math.min(100 - left, width + dxPct));
+    width = Math.max(12, Math.min(100 - left, width + dxPct));
   }
   if (h.includes('t')) {
-    const newTop = Math.max(0, Math.min(top + height - 15, top + dyPct));
+    const newTop = Math.max(0, Math.min(top + height - 12, top + dyPct));
     height = top + height - newTop;
     top = newTop;
   }
   if (h.includes('b')) {
-    height = Math.max(15, Math.min(100 - top, height + dyPct));
+    height = Math.max(12, Math.min(100 - top, height + dyPct));
   }
 
   roomState.cropRect = { left, top, width, height };
@@ -778,12 +850,41 @@ window.addEventListener('pointerup', () => {
   syncVideoFocusPayload({ cropRect: roomState.cropRect });
 });
 
+function applyStageCutTransform() {
+  const opened = isSiteOpened();
+  const active = Boolean(roomState.videoFocus) && opened;
+  const cut = active && Boolean(roomState.cropApplied);
+
+  if (!cut) {
+    iframeStage.style.width = '100%';
+    iframeStage.style.height = '100%';
+    iframeStage.style.transform = 'none';
+    return;
+  }
+
+  const rect = roomState.cropRect || DEFAULT_CROP;
+  const wPct = Math.max(12, rect.width) / 100;
+  const hPct = Math.max(12, rect.height) / 100;
+  const scaleX = 1 / wPct;
+  const scaleY = 1 / hPct;
+  const scale = Math.min(scaleX, scaleY);
+
+  const offsetX = -(rect.left / 100) * 100 * scale;
+  const offsetY = -(rect.top / 100) * 100 * scale;
+
+  iframeStage.style.width = '100%';
+  iframeStage.style.height = '100%';
+  iframeStage.style.transformOrigin = 'top left';
+  iframeStage.style.transform = `translate(${offsetX}%, ${offsetY}%) scale(${scale})`;
+}
+
 function applyVideoFocusUI() {
   const opened = isSiteOpened();
   siteViewActions.classList.toggle('hidden', !opened);
 
-  if (!opened && roomState.videoFocus) {
+  if (!opened) {
     roomState.videoFocus = false;
+    roomState.cropApplied = false;
   }
   if (!opened && browserBox.classList.contains('expanded')) {
     browserBox.classList.remove('expanded');
@@ -791,12 +892,23 @@ function applyVideoFocusUI() {
   }
 
   const active = Boolean(roomState.videoFocus) && opened;
+  const cut = active && Boolean(roomState.cropApplied);
+
   workspaceEl.classList.toggle('video-focus', active);
   videoFocusBtn.classList.toggle('active-focus', active);
-  videoFocusBtn.textContent = active ? '🎬 Убрать рамку' : '🎬 Рамка кадра';
+  videoFocusBtn.textContent = active ? 'Обычный вид' : '✂ Обрезать кадр';
   focusHeaderStrip.classList.toggle('hidden', !active);
-  cropOverlay.classList.toggle('hidden', !active);
+
+  cropOverlay.classList.toggle('hidden', !active || cut);
+  applyCropCutBtn.classList.toggle('hidden', cut);
+  editCropFrameBtn.classList.toggle('hidden', !cut);
+
+  focusStatusText.textContent = cut
+    ? 'Лишнее срезано по рамке'
+    : 'Потяни рамку за углы/края и нажми «Срезать по рамке»';
+
   renderCropBoxStyle();
+  applyStageCutTransform();
 }
 
 expandBrowserBtn.onclick = () => {
@@ -825,7 +937,8 @@ function updateUI() {
 
   browserControls.style.display = (isHost() || hasControl()) ? 'flex' : 'none';
 
-  if (hasControl() || roomState.videoFocus) {
+  const framingNow = Boolean(roomState.videoFocus) && !roomState.cropApplied;
+  if (hasControl() || framingNow) {
     shield.classList.add('hidden');
   } else {
     shield.classList.remove('hidden');
@@ -844,8 +957,9 @@ function renderUsers() {
 
   const usersToRender = roomState.users.length ? roomState.users : [{
     peerId: peer?.id || 'local',
-    name: currentUser.name,
-    avatar: currentUser.avatar
+    userId: currentUser?.id || '',
+    name: currentUser?.name || 'Участник',
+    avatar: currentUser?.avatar || getGeneratedAvatarUrl('Guest')
   }];
 
   usersToRender.forEach(u => {
@@ -854,7 +968,7 @@ function renderUsers() {
 
     const isUserHost = u.peerId === roomState.hostPeerId;
     const isUserCtrl = u.peerId === roomState.controllerPeerId;
-    const isSelf = peer && u.peerId === peer.id;
+    const isSelf = (peer && u.peerId === peer.id) || (currentUser && u.userId === currentUser.id);
 
     const img = document.createElement('img');
     img.src = u.avatar;
@@ -862,6 +976,7 @@ function renderUsers() {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'name';
     nameSpan.textContent = `${u.name} ${isUserHost ? '👑' : ''} ${isUserCtrl ? '🎮' : ''}`;
+    nameSpan.title = u.userId ? `ID: ${u.userId}` : u.name;
 
     li.appendChild(img);
     li.appendChild(nameSpan);
@@ -1018,15 +1133,15 @@ function sendNavigation(nextState) {
 function handleSearchOrOpen(rawValue, openGoogleImmediately = false) {
   const val = (rawValue || '').trim();
   if (!val) {
-    sendNavigation({ mode: 'search', query: '', browserUrl: '', videoFocus: false });
+    sendNavigation({ mode: 'search', query: '', browserUrl: '', videoFocus: false, cropApplied: false });
     return;
   }
 
   if (isDirectUrl(val)) {
     const url = toFullUrl(val);
-    sendNavigation({ mode: 'frame', query: val, browserUrl: url, videoFocus: false });
+    sendNavigation({ mode: 'frame', query: val, browserUrl: url, videoFocus: false, cropApplied: false });
   } else {
-    sendNavigation({ mode: 'search', query: val, browserUrl: '', videoFocus: false });
+    sendNavigation({ mode: 'search', query: val, browserUrl: '', videoFocus: false, cropApplied: false });
     if (openGoogleImmediately) {
       window.open(buildGoogleSearchUrl(val), '_blank', 'noopener,noreferrer');
     }
@@ -1133,10 +1248,16 @@ document.getElementById('chat-form').onsubmit = (e) => {
   input.value = '';
 };
 
-if (currentUser) {
-  openLobby();
+const inviteRoomFromUrl = new URLSearchParams(window.location.search).get('room');
+
+if (currentUser && currentUser.name) {
+  if (inviteRoomFromUrl) {
+    startRoom(inviteRoomFromUrl.toUpperCase(), false);
+  } else {
+    openLobby();
+  }
 } else {
+  pendingInviteRoom = inviteRoomFromUrl ? inviteRoomFromUrl.toUpperCase() : null;
   updateAvatarPreview();
   showScreen('profile');
 }
-

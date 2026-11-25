@@ -24,7 +24,7 @@
         </div>
       </div>
 
-      <input type="text" id="username-input" placeholder="Придумай никнейм..." maxlength="20">
+      <input type="text" id="username-input" placeholder="Придумай свой никнейм..." maxlength="20">
       <button id="save-profile-btn" class="btn-primary">Продолжить</button>
     </div>
   </div>
@@ -63,7 +63,11 @@
     <div class="card lobby-card">
       <div class="user-badge">
         <img id="lobby-avatar" src="" alt="">
-        <span id="lobby-username"></span>
+        <div style="flex:1; text-align:left; min-width:0;">
+          <div id="lobby-username" style="font-weight:600;"></div>
+          <div style="font-size:0.75rem; color:var(--muted);">Мой ID: <span id="lobby-user-id"></span></div>
+        </div>
+        <button type="button" id="copy-my-id-btn" class="btn-small btn-secondary">ID</button>
         <button id="edit-profile-btn" class="btn-link">Изменить</button>
       </div>
 
@@ -86,7 +90,7 @@
 
       <div id="lobby-tab-friends" class="tab-panel">
         <div class="add-friend-box">
-          <input type="text" id="friend-name-input" placeholder="Имя друга или ID..." maxlength="24">
+          <input type="text" id="friend-name-input" placeholder="Ник или ID друга..." maxlength="40">
           <button type="button" id="add-friend-manual-btn" class="btn-primary btn-small">+ Добавить</button>
         </div>
         <ul id="friends-list" class="friends-list"></ul>
@@ -110,7 +114,7 @@
         </div>
 
         <div id="site-view-actions" class="site-view-actions hidden">
-          <button type="button" id="video-focus-btn" class="btn-small btn-primary">🎬 Рамка кадра</button>
+          <button type="button" id="video-focus-btn" class="btn-small btn-primary">✂ Обрезать кадр</button>
           <button type="button" id="expand-browser-btn" class="btn-small btn-secondary">⛶ На весь экран</button>
         </div>
       </div>
@@ -127,9 +131,11 @@
         <button type="button" id="exit-expand-btn" class="exit-expand-btn hidden">✕ Свернуть</button>
 
         <div id="focus-header-strip" class="focus-header-strip hidden">
-          <span class="focus-title">Потяни рамку за углы или края</span>
+          <span id="focus-status-text" class="focus-title">Потяни рамку на нужный кусок</span>
           <div class="focus-strip-btns">
-            <button type="button" id="reset-crop-btn" class="btn-small btn-secondary">Сброс рамки</button>
+            <button type="button" id="apply-crop-cut-btn" class="btn-small btn-primary">✂ Срезать по рамке</button>
+            <button type="button" id="edit-crop-frame-btn" class="btn-small btn-secondary hidden">Поправить рамку</button>
+            <button type="button" id="reset-crop-btn" class="btn-small btn-secondary">Сброс</button>
           </div>
         </div>
 
@@ -144,7 +150,9 @@
         </div>
 
         <div id="iframe-crop-wrap" class="iframe-crop-wrap">
-          <iframe id="virtual-browser-frame" class="hidden" allow="autoplay; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
+          <div id="iframe-stage" class="iframe-stage">
+            <iframe id="virtual-browser-frame" class="hidden" allow="autoplay; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
+          </div>
 
           <div id="crop-overlay" class="crop-overlay hidden">
             <div id="crop-box" class="crop-box">
