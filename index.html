@@ -17,15 +17,44 @@
 
       <div class="avatar-preview">
         <img id="avatar-img" src="https://api.dicebear.com/7.x/bottts/svg?seed=Guest" alt="Аватар">
-        <div style="display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:center;">
+        <div class="avatar-actions">
           <button type="button" id="random-avatar-btn" class="btn-secondary btn-small">Сменить аватар</button>
-          <label for="custom-avatar-input" class="btn-secondary btn-small" style="cursor:pointer;">Своя картинка</label>
-          <input type="file" id="custom-avatar-input" accept="image/*" style="display:none;">
+          <button type="button" id="custom-avatar-btn" class="btn-secondary btn-small">Своя картинка</button>
+          <input type="file" id="custom-avatar-input" accept="image/*">
         </div>
       </div>
 
       <input type="text" id="username-input" placeholder="Придумай никнейм..." maxlength="20">
       <button id="save-profile-btn" class="btn-primary">Продолжить</button>
+    </div>
+  </div>
+
+  <!-- МОДАЛКА ОБРЕЗКИ АВАТАРКИ В КРУЖОЧЕК -->
+  <div id="crop-modal" class="modal hidden">
+    <div class="card crop-card">
+      <h3>Обрезка в кружочек</h3>
+      <p class="subtitle">Подвигай картинку и настрой масштаб</p>
+
+      <div id="crop-stage" class="crop-stage">
+        <img id="crop-image" src="" alt="Предпросмотр">
+        <div class="crop-circle-mask"></div>
+      </div>
+
+      <div class="crop-controls">
+        <label>Масштаб: <span id="crop-zoom-val">100%</span></label>
+        <input type="range" id="crop-zoom" min="100" max="300" value="100">
+
+        <label>По горизонтали</label>
+        <input type="range" id="crop-x" min="-100" max="100" value="0">
+
+        <label>По вертикали</label>
+        <input type="range" id="crop-y" min="-100" max="100" value="0">
+      </div>
+
+      <div class="crop-btns">
+        <button type="button" id="cancel-crop-btn" class="btn-secondary">Отмена</button>
+        <button type="button" id="apply-crop-btn" class="btn-primary">Поставить аву</button>
+      </div>
     </div>
   </div>
 
@@ -60,20 +89,26 @@
       </div>
 
       <div class="browser-connect">
-        <input type="text" id="neko-url-input" placeholder="Запрос в Google или URL сайта/Neko...">
-        <button id="connect-browser-btn" class="btn-primary btn-small">Открыть всем</button>
-        <button id="external-open-btn" class="btn-secondary btn-small" title="Открыть текущую ссылку в отдельной вкладке">↗ Вкладка</button>
+        <input type="text" id="neko-url-input" placeholder="Поиск Google или адрес сайта...">
+        <button id="connect-browser-btn" class="btn-primary btn-small">Найти / Открыть</button>
+        <button id="external-open-btn" class="btn-secondary btn-small" title="Открыть в новой вкладке">↗ Вкладка</button>
       </div>
     </header>
 
     <main class="workspace">
       <div class="browser-container">
-        <div id="browser-placeholder" class="placeholder">
-          <h3>Поиск и браузер готовы</h3>
-          <p>Введи поисковый запрос или адрес сайта/виртуального браузера вверху и нажми «Открыть всем».</p>
-          <button id="demo-browser-btn" class="btn-primary">Открыть поиск Google</button>
+        <!-- ВСТРОЕННЫЙ ПОИСК GOOGLE И ОТКРЫВАТЕЛЬ САЙТОВ -->
+        <div id="google-launcher" class="google-launcher">
+          <div class="google-logo"><span>G</span><span>o</span><span>o</span><span>g</span><span>l</span><span>e</span></div>
+          <p class="google-hint">Введи поисковый запрос или ссылку на сайт — откроем всем в комнате</p>
+          <div class="google-search-box">
+            <input type="text" id="google-query-input" placeholder="Что ищем в Google или какой сайт открыть?">
+            <button type="button" id="google-search-btn" class="btn-primary">Поиск Google</button>
+          </div>
+          <div id="search-results" class="search-results"></div>
         </div>
-        <iframe id="virtual-browser-frame" allow="autoplay; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
+
+        <iframe id="virtual-browser-frame" class="hidden" allow="autoplay; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
         <div id="viewer-shield" class="viewer-shield hidden" title="Управление сейчас у другого участника"></div>
       </div>
 

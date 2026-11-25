@@ -1,9 +1,8 @@
-
 const PEER_PREFIX = 'cobrowser_v1_';
 
 let currentUser = JSON.parse(localStorage.getItem('cobrowser_user')) || null;
 let avatarSeed = currentUser?.seed || Math.random().toString(36).substring(7);
-let customAvatarDataUrl = currentUser?.customAvatar || null;
+let pendingAvatarDataUrl = currentUser?.avatar || null;
 
 let peer = null;
 let connections = new Map();
@@ -13,6 +12,8 @@ let roomState = {
   id: null,
   hostPeerId: null,
   controllerPeerId: null,
+  mode: 'search', // 'search' | 'frame'
+  query: '',
   browserUrl: '',
   users: []
 };
@@ -36,24 +37,51 @@ function hasControl() {
   return peer && roomState.controllerPeerId === peer.id;
 }
 
-// --- 1. ПРОФИЛЬ И СВОЯ АВАТАРКА ---
+// --- 1. ПРОФИЛЬ И ОБРЕЗКА АВАТАРКИ В КРУЖОЧЕК ---
 const avatarImg = document.getElementById('avatar-img');
 const usernameInput = document.getElementById('username-input');
 const customAvatarInput = document.getElementById('custom-avatar-input');
+const cropModal = document.getElementById('crop-modal');
+const cropImage = document.getElementById('crop-image');
+const cropZoom = document.getElementById('crop-zoom');
+const cropX = document.getElementById('crop-x');
+const cropY = document.getElementById('crop-y');
+const cropZoomVal = document.getElementById('crop-zoom-val');
 
 function getGeneratedAvatarUrl(seed) {
   return `https://api.dicebear.com/7.x/bottts/svg?seed=${seed}`;
 }
 
 function updateAvatarPreview() {
-  avatarImg.src = customAvatarDataUrl || getGeneratedAvatarUrl(avatarSeed);
+  avatarImg.src = pendingAvatarDataUrl || getGeneratedAvatarUrl(avatarSeed);
 }
 
 document.getElementById('random-avatar-btn').onclick = () => {
-  customAvatarDataUrl = null;
+  pendingAvatarDataUrl = null;
   avatarSeed = Math.random().toString(36).substring(7);
   updateAvatarPreview();
 };
+
+document.getElementById('custom-avatar-btn').onclick = () => {
+  customAvatarInput.click();
+};
+
+function renderCropTransform() {
+  const zoom = Number(cropZoom.value) / 100;
+  const x = Number(cropX.value);
+  const y = Number(cropY.value);
+  cropZoomVal.textContent = `${cropZoom.value}%`;
+
+  // Вписываем картинку так, чтобы минимальная сторона покрывала круг 220x220
+  const natW = cropImage.naturalWidth || 220;
+  const natH = cropImage.naturalHeight || 220;
+  const baseScale = Math.max(220 / natW, 220 / natH);
+  const totalScale = baseScale * zoom;
+
+  cropImage.style.width = `${natW}px`;
+  cropImage.style.height = `${natH}px`;
+  cropImage.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${totalScale})`;
+}
 
 customAvatarInput.onchange = (e) => {
   const file = e.target.files?.[0];
@@ -61,39 +89,72 @@ customAvatarInput.onchange = (e) => {
 
   const reader = new FileReader();
   reader.onload = (event) => {
-    const img = new Image();
-    img.onload = () => {
-      // Сжимаем аватарку до 160x160, чтобы не забивать память и трафик
-      const canvas = document.createElement('canvas');
-      const size = 160;
-      canvas.width = size;
-      canvas.height = size;
-      const ctx = canvas.getContext('2d');
-
-      const minSide = Math.min(img.width, img.height);
-      const sx = (img.width - minSide) / 2;
-      const sy = (img.height - minSide) / 2;
-      ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, size, size);
-
-      customAvatarDataUrl = canvas.toDataURL('image/jpeg', 0.82);
-      updateAvatarPreview();
+    cropImage.onload = () => {
+      cropZoom.value = 100;
+      cropX.value = 0;
+      cropY.value = 0;
+      renderCropTransform();
+      cropModal.classList.remove('hidden');
     };
-    img.src = event.target.result;
+    cropImage.src = event.target.result;
   };
   reader.readAsDataURL(file);
   e.target.value = '';
 };
 
+cropZoom.oninput = renderCropTransform;
+cropX.oninput = renderCropTransform;
+cropY.oninput = renderCropTransform;
+
+document.getElementById('cancel-crop-btn').onclick = () => {
+  cropModal.classList.add('hidden');
+};
+
+document.getElementById('apply-crop-btn').onclick = () => {
+  const size = 180;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  // Рисуем круглую маску
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.clip();
+
+  const natW = cropImage.naturalWidth || size;
+  const natH = cropImage.naturalHeight || size;
+  const baseScale = Math.max(220 / natW, 220 / natH);
+  const zoom = Number(cropZoom.value) / 100;
+  const scaleRatio = (baseScale * zoom) * (size / 220);
+
+  const offsetX = Number(cropX.value) * (size / 220);
+  const offsetY = Number(cropY.value) * (size / 220);
+
+  const drawW = natW * scaleRatio;
+  const drawH = natH * scaleRatio;
+  const drawX = (size - drawW) / 2 + offsetX;
+  const drawY = (size - drawH) / 2 + offsetY;
+
+  ctx.drawImage(cropImage, drawX, drawY, drawW, drawH);
+  ctx.restore();
+
+  pendingAvatarDataUrl = canvas.toDataURL('image/png');
+  updateAvatarPreview();
+  cropModal.classList.add('hidden');
+};
+
 document.getElementById('save-profile-btn').onclick = () => {
   const name = usernameInput.value.trim();
   if (!name) return alert('Введи никнейм!');
-  const finalAvatar = customAvatarDataUrl || getGeneratedAvatarUrl(avatarSeed);
+  const finalAvatar = pendingAvatarDataUrl || getGeneratedAvatarUrl(avatarSeed);
 
   currentUser = {
     id: currentUser?.id || 'u_' + Date.now(),
     name,
     seed: avatarSeed,
-    customAvatar: customAvatarDataUrl,
     avatar: finalAvatar
   };
   localStorage.setItem('cobrowser_user', JSON.stringify(currentUser));
@@ -103,7 +164,7 @@ document.getElementById('save-profile-btn').onclick = () => {
 document.getElementById('edit-profile-btn').onclick = () => {
   usernameInput.value = currentUser.name;
   avatarSeed = currentUser.seed || avatarSeed;
-  customAvatarDataUrl = currentUser.customAvatar || null;
+  pendingAvatarDataUrl = currentUser.avatar?.startsWith('data:image') ? currentUser.avatar : null;
   updateAvatarPreview();
   showScreen('profile');
 };
@@ -215,8 +276,10 @@ function handleMessageAtHost(fromPeerId, msg) {
     const payload = { type: 'chat', sender: msg.sender, text: msg.text };
     broadcastRaw(payload);
     appendChatMessage(msg.sender, msg.text);
-  } else if (msg.type === 'set-url' && fromPeerId === roomState.controllerPeerId) {
-    roomState.browserUrl = msg.url;
+  } else if (msg.type === 'nav' && fromPeerId === roomState.controllerPeerId) {
+    roomState.mode = msg.mode;
+    roomState.query = msg.query || '';
+    roomState.browserUrl = msg.url || '';
     broadcastState();
     updateUI();
   }
@@ -275,10 +338,7 @@ function updateUI() {
     shield.classList.remove('hidden');
   }
 
-  if (roomState.browserUrl) {
-    loadVirtualBrowser(roomState.browserUrl);
-  }
-
+  applyBrowserState();
   renderUsers();
 }
 
@@ -333,66 +393,157 @@ document.getElementById('copy-invite-btn').onclick = () => {
   });
 };
 
-// --- 3. ПОИСК GOOGLE И ВСТРОЕННЫЙ БРАУЗЕР ---
+// --- 3. ПОИСК GOOGLE И ОТКРЫВАТЕЛЬ САЙТОВ ---
 const iframe = document.getElementById('virtual-browser-frame');
-const placeholder = document.getElementById('browser-placeholder');
-const urlInput = document.getElementById('neko-url-input');
+const googleLauncher = document.getElementById('google-launcher');
+const topInput = document.getElementById('neko-url-input');
+const googleQueryInput = document.getElementById('google-query-input');
+const searchResultsEl = document.getElementById('search-results');
 
-function resolveInputToUrl(raw) {
-  const trimmed = (raw || '').trim();
-  if (!trimmed) return 'https://www.google.com/?igu=1';
-
-  // Если похоже на домен или уже начинается с http(s)://
-  const hasProtocol = /^https?:\/\//i.test(trimmed);
-  const looksLikeDomain = !trimmed.includes(' ') && /^[a-z0-9-]+(\.[a-z0-9-]+)+/i.test(trimmed);
-
-  if (hasProtocol) return trimmed;
-  if (looksLikeDomain) return 'https://' + trimmed;
-
-  // Иначе считаем это поисковым запросом Google
-  return 'https://www.google.com/search?q=' + encodeURIComponent(trimmed) + '&igu=1';
+function isDirectUrl(raw) {
+  const s = (raw || '').trim();
+  if (!s) return false;
+  return /^https?:\/\//i.test(s) || (!s.includes(' ') && /^[a-z0-9-]+(\.[a-z0-9-]+)+/i.test(s));
 }
 
-function loadVirtualBrowser(url) {
-  if (!url) return;
-  placeholder.classList.add('hidden');
-  iframe.style.display = 'block';
-  if (iframe.src !== url) {
-    iframe.src = url;
+function toFullUrl(raw) {
+  const s = (raw || '').trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  return 'https://' + s;
+}
+
+function renderGoogleResults(query) {
+  searchResultsEl.innerHTML = '';
+  const q = (query || '').trim();
+  if (!q) return;
+
+  const encoded = encodeURIComponent(q);
+  const googleSearchUrl = `https://www.google.com/search?q=${encoded}`;
+  const googleImagesUrl = `https://www.google.com/search?tbm=isch&q=${encoded}`;
+  const googleVideosUrl = `https://www.google.com/search?tbm=vid&q=${encoded}`;
+
+  const items = [
+    {
+      title: `Google Поиск: «${q}»`,
+      url: googleSearchUrl,
+      canEmbed: false
+    },
+    {
+      title: `Google Картинки: «${q}»`,
+      url: googleImagesUrl,
+      canEmbed: false
+    },
+    {
+      title: `Google Видео: «${q}»`,
+      url: googleVideosUrl,
+      canEmbed: false
+    }
+  ];
+
+  items.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'result-card';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'r-title';
+    titleEl.textContent = item.title;
+
+    const urlEl = document.createElement('div');
+    urlEl.className = 'r-url';
+    urlEl.textContent = item.url;
+
+    const actions = document.createElement('div');
+    actions.className = 'r-actions';
+
+    const openTabBtn = document.createElement('button');
+    openTabBtn.type = 'button';
+    openTabBtn.className = 'btn-primary btn-small';
+    openTabBtn.textContent = 'Открыть в Google';
+    openTabBtn.onclick = () => {
+      window.open(item.url, '_blank', 'noopener,noreferrer');
+    };
+
+    actions.appendChild(openTabBtn);
+    card.appendChild(titleEl);
+    card.appendChild(urlEl);
+    card.appendChild(actions);
+    searchResultsEl.appendChild(card);
+  });
+}
+
+function applyBrowserState() {
+  if (roomState.mode === 'frame' && roomState.browserUrl) {
+    googleLauncher.classList.add('hidden');
+    iframe.classList.remove('hidden');
+    if (iframe.src !== roomState.browserUrl) {
+      iframe.src = roomState.browserUrl;
+    }
+  } else {
+    iframe.classList.add('hidden');
+    googleLauncher.classList.remove('hidden');
+    if (roomState.query) {
+      googleQueryInput.value = roomState.query;
+      topInput.value = roomState.query;
+      renderGoogleResults(roomState.query);
+    } else {
+      searchResultsEl.innerHTML = '';
+    }
   }
 }
 
-function publishBrowserUrl(rawValue) {
-  const targetUrl = resolveInputToUrl(rawValue);
-
+function sendNavigation(nextState) {
   if (isHost()) {
-    roomState.browserUrl = targetUrl;
-    loadVirtualBrowser(targetUrl);
+    roomState = { ...roomState, ...nextState };
+    applyBrowserState();
     broadcastState();
   } else if (hasControl() && hostConn && hostConn.open) {
-    hostConn.send({ type: 'set-url', url: targetUrl });
+    hostConn.send({ type: 'nav', ...nextState });
+  }
+}
+
+function handleSearchOrOpen(rawValue) {
+  const val = (rawValue || '').trim();
+  if (!val) {
+    sendNavigation({ mode: 'search', query: '', browserUrl: '' });
+    return;
+  }
+
+  if (isDirectUrl(val)) {
+    const url = toFullUrl(val);
+    sendNavigation({ mode: 'frame', query: val, browserUrl: url });
+  } else {
+    sendNavigation({ mode: 'search', query: val, browserUrl: '' });
   }
 }
 
 document.getElementById('connect-browser-btn').onclick = () => {
-  publishBrowserUrl(urlInput.value);
+  handleSearchOrOpen(topInput.value);
 };
 
-urlInput.addEventListener('keydown', (e) => {
+topInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    publishBrowserUrl(urlInput.value);
+    handleSearchOrOpen(topInput.value);
   }
 });
 
-document.getElementById('demo-browser-btn').onclick = () => {
-  const query = urlInput.value.trim();
-  publishBrowserUrl(query || 'https://www.google.com/?igu=1');
+document.getElementById('google-search-btn').onclick = () => {
+  handleSearchOrOpen(googleQueryInput.value);
 };
 
+googleQueryInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    handleSearchOrOpen(googleQueryInput.value);
+  }
+});
+
 document.getElementById('external-open-btn').onclick = () => {
-  const targetUrl = roomState.browserUrl || resolveInputToUrl(urlInput.value);
-  window.open(targetUrl, '_blank', 'noopener,noreferrer');
+  const q = (topInput.value || googleQueryInput.value || roomState.query || '').trim();
+  const target = roomState.browserUrl
+    ? roomState.browserUrl
+    : (q ? `https://www.google.com/search?q=${encodeURIComponent(q)}` : 'https://www.google.com');
+  window.open(target, '_blank', 'noopener,noreferrer');
 };
 
 // --- 4. ЧАТ ---
@@ -441,3 +592,4 @@ if (currentUser) {
   updateAvatarPreview();
   showScreen('profile');
 }
+
