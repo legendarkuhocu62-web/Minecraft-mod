@@ -5,6 +5,11 @@ const PIPED_INSTANCES = [
   'https://pipedapi.adminforge.de',
   'https://pipedapi.moomoo.me'
 ];
+const INVIDIOUS_INSTANCES = [
+  'https://inv.nadeko.net',
+  'https://yewtu.be',
+  'https://invidious.nerdvpn.de'
+];
 
 let currentUser = JSON.parse(localStorage.getItem('cobrowser_user')) || null;
 let friendsList = JSON.parse(localStorage.getItem('cobrowser_friends')) || [];
@@ -1330,7 +1335,7 @@ document.getElementById('copy-invite-btn').onclick = () => {
   });
 };
 
-// --- 3. ЖИВОЙ ПОИСК YOUTUBE + ОТКРЫТИЕ В БРАУЗЕРЕ + СИНХРОНИЗАЦИЯ ---
+// --- 3. ПОИСК YOUTUBE + НАДЁЖНЫЙ ЗАПУСК В БРАУЗЕРЕ ---
 const iframe = document.getElementById('virtual-browser-frame');
 const googleLauncher = document.getElementById('google-launcher');
 const topInput = document.getElementById('neko-url-input');
@@ -1355,17 +1360,22 @@ function toFullUrl(raw) {
 
 function extractYouTubeId(raw) {
   if (!raw) return null;
+  const trimmed = raw.trim();
+  const directIdMatch = trimmed.match(/^[a-zA-Z0-9_-]{11}$/);
+  if (directIdMatch) return directIdMatch[0];
+
   try {
-    const normalized = /^https?:\/\//i.test(raw.trim()) ? raw.trim() : `https://${raw.trim()}`;
+    const normalized = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
     const u = new URL(normalized);
     if (u.hostname.includes('youtu.be')) {
-      return u.pathname.replace('/', '').split('/')[0] || null;
+      const id = u.pathname.replace(/^\/+/, '').split('/')[0];
+      return id ? id.slice(0, 11) : null;
     }
     if (u.hostname.includes('youtube.com')) {
-      if (u.searchParams.get('v')) return u.searchParams.get('v');
+      if (u.searchParams.get('v')) return u.searchParams.get('v').slice(0, 11);
       const parts = u.pathname.split('/').filter(Boolean);
-      const idx = parts.findIndex(p => p === 'shorts' || p === 'embed' || p === 'live');
-      if (idx !== -1 && parts[idx + 1]) return parts[idx + 1];
+      const idx = parts.findIndex(p => p === 'shorts' || p === 'embed' || p === 'live' || p === 'v');
+      if (idx !== -1 && parts[idx + 1]) return parts[idx + 1].slice(0, 11);
     }
   } catch (_) {}
   return null;
@@ -1376,29 +1386,30 @@ function formatDuration(sec) {
   return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
 }
 
-function openExternalUrl(url, shareToRoom = true) {
-  if (!url) return;
-  if (shareToRoom && canControlRoom()) {
-    sendNavigation({
-      mode: 'search',
-      query: roomState.query || url,
-      browserUrl: url,
-      videoFocus: false,
-      cropApplied: false
-    });
-  }
-  window.open(url, '_blank', 'noopener,noreferrer');
+function syncUrlToRoom(url, label = '') {
+  if (!url || !canControlRoom()) return false;
+  sendNavigation({
+    mode: 'search',
+    query: roomState.query || label || '',
+    browserUrl: url,
+    videoFocus: false,
+    cropApplied: false
+  });
+  return true;
 }
 
-function createVideoCard({ url, title, channel, durationSec, thumb }) {
+function createVideoCard({ url, title, channel, durationSec, thumb, isDirectVideo = false }) {
   const card = document.createElement('div');
   card.className = 'yt-video-card';
 
-  const img = document.createElement('img');
-  img.className = 'yt-video-thumb';
-  img.src = thumb || '';
-  img.alt = title || 'Видео';
-  img.loading = 'lazy';
+  if (thumb) {
+    const img = document.createElement('img');
+    img.className = 'yt-video-thumb';
+    img.src = thumb;
+    img.alt = title || 'Видео';
+    img.loading = 'lazy';
+    card.appendChild(img);
+  }
 
   const info = document.createElement('div');
   info.className = 'yt-video-info';
@@ -1408,43 +1419,44 @@ function createVideoCard({ url, title, channel, durationSec, thumb }) {
   titleEl.textContent = title || 'Видео';
 
   const dur = formatDuration(durationSec);
-  const metaText = [channel, dur, url].filter(Boolean).join(' • ');
+  const metaParts = [channel, dur, isDirectVideo ? 'Прямой запуск видео' : ''].filter(Boolean);
   const metaEl = document.createElement('div');
   metaEl.className = 'yt-video-meta';
-  metaEl.textContent = metaText;
+  metaEl.textContent = metaParts.join(' • ') || 'YouTube';
 
   const actions = document.createElement('div');
   actions.className = 'yt-video-actions';
 
-  const openBtn = document.createElement('button');
-  openBtn.type = 'button';
-  openBtn.className = 'btn-primary btn-small';
-  openBtn.textContent = '↗ Открыть в браузере';
-  openBtn.onclick = () => openExternalUrl(url, true);
+  const openLink = document.createElement('a');
+  openLink.className = 'btn-primary btn-small';
+  openLink.href = url;
+  openLink.target = '_blank';
+  openLink.rel = 'noopener noreferrer';
+  openLink.style.textDecoration = 'none';
+  openLink.style.display = 'inline-flex';
+  openLink.style.alignItems = 'center';
+  openLink.textContent = '▶ Запустить в браузере';
+  openLink.addEventListener('click', () => {
+    syncUrlToRoom(url, title);
+  });
 
   const syncBtn = document.createElement('button');
   syncBtn.type = 'button';
   syncBtn.className = 'btn-secondary btn-small';
-  syncBtn.textContent = 'Синхронизировать';
+  syncBtn.textContent = 'Кинуть в комнату';
   syncBtn.onclick = () => {
     if (!canControlRoom()) {
       return alert('Синхронизировать ссылку может участник с пультом или Главный (👑).');
     }
-    sendNavigation({
-      mode: 'search',
-      query: title || url,
-      browserUrl: url,
-      videoFocus: false,
-      cropApplied: false
-    });
+    syncUrlToRoom(url, title);
     if (ytSearchStatusEl) {
-      ytSearchStatusEl.textContent = `Ссылка синхронизирована в комнате: ${url}`;
+      ytSearchStatusEl.textContent = 'Ссылка отправлена участникам комнаты';
     }
   };
 
-  actions.append(openBtn, syncBtn);
+  actions.append(openLink, syncBtn);
   info.append(titleEl, metaEl, actions);
-  card.append(img, info);
+  card.appendChild(info);
   return card;
 }
 
@@ -1463,14 +1475,15 @@ async function renderSearchHub(query) {
     const watchUrl = `https://www.youtube.com/watch?v=${ytId}`;
     lastSearchedQuery = q;
     if (ytSearchStatusEl) {
-      ytSearchStatusEl.textContent = 'Ссылка на YouTube распознана — откроется в браузере со звуком';
+      ytSearchStatusEl.textContent = 'Видео готово к запуску в браузере со звуком';
     }
     searchResultsEl.appendChild(createVideoCard({
       url: watchUrl,
-      title: 'Открыть видео на YouTube',
+      title: `Видео YouTube (${ytId})`,
       channel: 'YouTube',
       durationSec: 0,
-      thumb: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`
+      thumb: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`,
+      isDirectVideo: true
     }));
     return;
   }
@@ -1479,12 +1492,12 @@ async function renderSearchHub(query) {
     const fullUrl = toFullUrl(q);
     lastSearchedQuery = q;
     if (ytSearchStatusEl) {
-      ytSearchStatusEl.textContent = 'Прямая ссылка — откроется в новом окне браузера';
+      ytSearchStatusEl.textContent = 'Ссылка готова к открытию в браузере';
     }
     searchResultsEl.appendChild(createVideoCard({
       url: fullUrl,
-      title: 'Открыть сайт в браузере',
-      channel: fullUrl,
+      title: 'Открыть ссылку в браузере',
+      channel: 'Внешний сайт',
       durationSec: 0,
       thumb: ''
     }));
@@ -1494,13 +1507,13 @@ async function renderSearchHub(query) {
   if (q === lastSearchedQuery && searchResultsEl.children.length) return;
   lastSearchedQuery = q;
 
-  if (ytSearchStatusEl) ytSearchStatusEl.textContent = `Ищу «${q}» на YouTube...`;
+  if (ytSearchStatusEl) ytSearchStatusEl.textContent = `Ищу «${q}»...`;
 
   for (const base of PIPED_INSTANCES) {
     try {
       const res = await fetch(
         `${base}/search?q=${encodeURIComponent(q)}&filter=videos`,
-        { signal: AbortSignal.timeout(4500) }
+        { signal: AbortSignal.timeout(3500) }
       );
       if (!res.ok) continue;
       const data = await res.json();
@@ -1513,7 +1526,7 @@ async function renderSearchHub(query) {
       if (!items.length) continue;
 
       if (ytSearchStatusEl) {
-        ytSearchStatusEl.textContent = `Найдено видео: ${items.length} (клик откроет YouTube в браузере)`;
+        ytSearchStatusEl.textContent = `Найдено роликов: ${items.length}`;
       }
 
       const frag = document.createDocumentFragment();
@@ -1525,24 +1538,56 @@ async function renderSearchHub(query) {
           title: v.title || 'Без названия',
           channel: v.uploaderName || 'YouTube',
           durationSec: v.duration || 0,
-          thumb: v.thumbnail || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
+          thumb: v.thumbnail || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+          isDirectVideo: true
+        }));
+      }
+      if (frag.children.length) {
+        searchResultsEl.replaceChildren(frag);
+        return;
+      }
+    } catch (_) {}
+  }
+
+  for (const base of INVIDIOUS_INSTANCES) {
+    try {
+      const res = await fetch(
+        `${base}/api/v1/search?q=${encodeURIComponent(q)}&type=video`,
+        { signal: AbortSignal.timeout(3500) }
+      );
+      if (!res.ok) continue;
+      const list = await res.json();
+      const videos = Array.isArray(list) ? list.filter(v => v.videoId).slice(0, 8) : [];
+      if (!videos.length) continue;
+
+      if (ytSearchStatusEl) {
+        ytSearchStatusEl.textContent = `Найдено роликов: ${videos.length}`;
+      }
+
+      const frag = document.createDocumentFragment();
+      for (const v of videos) {
+        frag.appendChild(createVideoCard({
+          url: `https://www.youtube.com/watch?v=${v.videoId}`,
+          title: v.title || 'Без названия',
+          channel: v.author || 'YouTube',
+          durationSec: v.lengthSeconds || 0,
+          thumb: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
+          isDirectVideo: true
         }));
       }
       searchResultsEl.replaceChildren(frag);
       return;
-    } catch (_) {
-      // Пробуем следующий инстанс Piped
-    }
+    } catch (_) {}
   }
 
   const ytSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
   if (ytSearchStatusEl) {
-    ytSearchStatusEl.textContent = 'API не ответил — открой выдачу напрямую на YouTube в браузере';
+    ytSearchStatusEl.textContent = 'Список API недоступен — открой выдачу на YouTube в браузере';
   }
   searchResultsEl.appendChild(createVideoCard({
     url: ytSearchUrl,
-    title: `Открыть поиск «${q}» на YouTube`,
-    channel: 'YouTube Search',
+    title: `Поиск «${q}» на YouTube`,
+    channel: 'YouTube',
     durationSec: 0,
     thumb: ''
   }));
@@ -1559,14 +1604,11 @@ function applyBrowserState() {
     iframe.classList.add('hidden');
     googleLauncher.classList.remove('hidden');
 
-    const activeQuery = roomState.query || roomState.browserUrl || '';
-    if (activeQuery) {
+    const activeQuery = roomState.query || '';
+    if (activeQuery && activeQuery !== lastSearchedQuery) {
       if (document.activeElement !== googleQueryInput) googleQueryInput.value = activeQuery;
       if (document.activeElement !== topInput) topInput.value = activeQuery;
       renderSearchHub(activeQuery);
-    } else if (!lastSearchedQuery) {
-      searchResultsEl.innerHTML = '';
-      if (ytSearchStatusEl) ytSearchStatusEl.textContent = '';
     }
   }
 }
@@ -1587,12 +1629,15 @@ function handleSearchOrOpen(rawValue, openDirectIfUrl = false) {
   if (!val) {
     lastSearchedQuery = '';
     sendNavigation({ mode: 'search', query: '', browserUrl: '', videoFocus: false, cropApplied: false });
+    searchResultsEl.innerHTML = '';
+    if (ytSearchStatusEl) ytSearchStatusEl.textContent = '';
     return;
   }
 
   const ytId = extractYouTubeId(val);
   if (ytId) {
     const watchUrl = `https://www.youtube.com/watch?v=${ytId}`;
+    lastSearchedQuery = '';
     sendNavigation({ mode: 'search', query: watchUrl, browserUrl: watchUrl, videoFocus: false, cropApplied: false });
     renderSearchHub(watchUrl);
     if (openDirectIfUrl) {
@@ -1603,6 +1648,7 @@ function handleSearchOrOpen(rawValue, openDirectIfUrl = false) {
 
   if (isDirectUrl(val)) {
     const url = toFullUrl(val);
+    lastSearchedQuery = '';
     sendNavigation({ mode: 'search', query: url, browserUrl: url, videoFocus: false, cropApplied: false });
     renderSearchHub(url);
     if (openDirectIfUrl) {
