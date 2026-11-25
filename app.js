@@ -1,5 +1,5 @@
 const GOOGLE_SEARCH_API_KEY = 'AIzaSyCnieC9wrpTKLYq0OQPEmYX_NORgJR4Hv4';
-const GOOGLE_CSE_CX = ''; // Опционально: ID поисковика (cx) из Programmable Search Engine
+const GOOGLE_CSE_CX = '84e78df5e6f6e4afa'; // Опционально: ID поисковика (cx) из Programmable Search Engine
 
 const PEER_PREFIX = 'cobrowser_v1_';
 const RU_PROXY_PREFIX = '';
@@ -1338,7 +1338,7 @@ document.getElementById('copy-invite-btn').onclick = () => {
   });
 };
 
-// --- 3. ПОИСК YOUTUBE + НАДЁЖНЫЙ ЗАПУСК В БРАУЗЕРЕ ---
+// --- 3. ПОИСК И НАДЁЖНЫЙ ЗАПУСК В БРАУЗЕРЕ ---
 const iframe = document.getElementById('virtual-browser-frame');
 const googleLauncher = document.getElementById('google-launcher');
 const topInput = document.getElementById('neko-url-input');
@@ -1392,7 +1392,7 @@ function formatDuration(sec) {
 function syncUrlToRoom(url, label = '') {
   if (!url || !canControlRoom()) return false;
   sendNavigation({
-    mode: 'search',
+    mode: 'frame',
     query: roomState.query || label || '',
     browserUrl: url,
     videoFocus: false,
@@ -1409,7 +1409,7 @@ function createVideoCard({ url, title, channel, durationSec, thumb, isDirectVide
     const img = document.createElement('img');
     img.className = 'yt-video-thumb';
     img.src = thumb;
-    img.alt = title || 'Видео';
+    img.alt = title || 'Результат';
     img.loading = 'lazy';
     card.appendChild(img);
   }
@@ -1419,13 +1419,13 @@ function createVideoCard({ url, title, channel, durationSec, thumb, isDirectVide
 
   const titleEl = document.createElement('div');
   titleEl.className = 'yt-video-title';
-  titleEl.textContent = title || 'Видео';
+  titleEl.textContent = title || 'Ссылка';
 
   const dur = formatDuration(durationSec);
   const metaParts = [channel, dur, isDirectVideo ? 'Прямой запуск видео' : ''].filter(Boolean);
   const metaEl = document.createElement('div');
   metaEl.className = 'yt-video-meta';
-  metaEl.textContent = metaParts.join(' • ') || 'YouTube';
+  metaEl.textContent = metaParts.join(' • ') || 'Google';
 
   const actions = document.createElement('div');
   actions.className = 'yt-video-actions';
@@ -1512,12 +1512,12 @@ async function renderSearchHub(query) {
 
   if (ytSearchStatusEl) ytSearchStatusEl.textContent = `Ищу «${q}»...`;
 
-  // 1. Поиск через Google Custom Search JSON API с твоим ключом
+  // 1. Поиск через Google Custom Search JSON API
   if (GOOGLE_SEARCH_API_KEY) {
     try {
       const cxParam = GOOGLE_CSE_CX ? `&cx=${encodeURIComponent(GOOGLE_CSE_CX)}` : '';
       const gUrl = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(GOOGLE_SEARCH_API_KEY)}${cxParam}&q=${encodeURIComponent(q)}`;
-      const res = await fetch(gUrl, { signal: AbortSignal.timeout(4000) });
+      const res = await fetch(gUrl, { signal: AbortSignal.timeout(4500) });
       const data = await res.json().catch(() => null);
 
       if (res.ok && data && Array.isArray(data.items) && data.items.length) {
@@ -1549,7 +1549,7 @@ async function renderSearchHub(query) {
       } else if (!res.ok) {
         const apiErrMsg = data?.error?.message || `HTTP ${res.status}`;
         if (ytSearchStatusEl) {
-          ytSearchStatusEl.textContent = `Google API: ${apiErrMsg} — пробую резерв...`;
+          ytSearchStatusEl.textContent = `Google API (${apiErrMsg}) — ищу через резервные источники...`;
         }
       }
     } catch (_) {}
@@ -1628,14 +1628,75 @@ async function renderSearchHub(query) {
     } catch (_) {}
   }
 
+  // 4. Резерв: DuckDuckGo Instant Answer API
+  try {
+    const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1`;
+    const ddgRes = await fetch(ddgUrl, { signal: AbortSignal.timeout(3500) });
+    if (ddgRes.ok) {
+      const ddg = await ddgRes.json();
+      const cards = [];
+      const pushTopic = (item) => {
+        if (!item) return;
+        if (item.FirstURL && item.Text) {
+          cards.push({
+            url: item.FirstURL,
+            title: item.Text,
+            channel: 'DuckDuckGo',
+            durationSec: 0,
+            thumb: item.Icon?.URL ? (item.Icon.URL.startsWith('http') ? item.Icon.URL : `https://duckduckgo.com${item.Icon.URL}`) : ''
+          });
+        }
+        if (Array.isArray(item.Topics)) item.Topics.forEach(pushTopic);
+      };
+      if (ddg.AbstractURL && ddg.Heading) {
+        cards.push({
+          url: ddg.AbstractURL,
+          title: ddg.Heading,
+          channel: ddg.AbstractSource || 'DuckDuckGo',
+          durationSec: 0,
+          thumb: ddg.Image ? (ddg.Image.startsWith('http') ? ddg.Image : `https://duckduckgo.com${ddg.Image}`) : ''
+        });
+      }
+      if (Array.isArray(ddg.Results)) ddg.Results.forEach(pushTopic);
+      if (Array.isArray(ddg.RelatedTopics)) ddg.RelatedTopics.forEach(pushTopic);
+
+      const uniqueCards = [];
+      const seenUrls = new Set();
+      for (const c of cards) {
+        if (!c.url || seenUrls.has(c.url)) continue;
+        seenUrls.add(c.url);
+        uniqueCards.push(c);
+        if (uniqueCards.length >= 8) break;
+      }
+
+      if (uniqueCards.length) {
+        if (ytSearchStatusEl) {
+          ytSearchStatusEl.textContent = `Найдено результатов: ${uniqueCards.length}`;
+        }
+        const frag = document.createDocumentFragment();
+        uniqueCards.forEach(c => frag.appendChild(createVideoCard(c)));
+        searchResultsEl.replaceChildren(frag);
+        return;
+      }
+    }
+  } catch (_) {}
+
+  const googleSearchUrl = `https://www.google.com/search?q=${encodeURIComponent(q)}`;
   const ytSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
   if (ytSearchStatusEl) {
-    ytSearchStatusEl.textContent = 'Список API недоступен — открой выдачу на YouTube в браузере';
+    ytSearchStatusEl.textContent = 'Открой выдачу напрямую в Google или YouTube';
   }
   searchResultsEl.appendChild(createVideoCard({
+    url: googleSearchUrl,
+    title: `Google: «${q}»`,
+    channel: 'Google Search',
+    durationSec: 0,
+    thumb: ''
+  }));
+  searchResultsEl.appendChild(createVideoCard({
     url: ytSearchUrl,
-    title: `Поиск «${q}» в сети`,
-    channel: 'Поиск',
+    title: `YouTube: «${q}»`,
+    channel: 'YouTube',
     durationSec: 0,
     thumb: ''
   }));
@@ -1686,22 +1747,14 @@ function handleSearchOrOpen(rawValue, openDirectIfUrl = false) {
   if (ytId) {
     const watchUrl = `https://www.youtube.com/watch?v=${ytId}`;
     lastSearchedQuery = '';
-    sendNavigation({ mode: 'search', query: watchUrl, browserUrl: watchUrl, videoFocus: false, cropApplied: false });
-    renderSearchHub(watchUrl);
-    if (openDirectIfUrl) {
-      window.open(watchUrl, '_blank', 'noopener,noreferrer');
-    }
+    sendNavigation({ mode: 'frame', query: watchUrl, browserUrl: watchUrl, videoFocus: false, cropApplied: false });
     return;
   }
 
   if (isDirectUrl(val)) {
     const url = toFullUrl(val);
     lastSearchedQuery = '';
-    sendNavigation({ mode: 'search', query: url, browserUrl: url, videoFocus: false, cropApplied: false });
-    renderSearchHub(url);
-    if (openDirectIfUrl) {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
+    sendNavigation({ mode: 'frame', query: url, browserUrl: url, videoFocus: false, cropApplied: false });
     return;
   }
 
@@ -1739,7 +1792,7 @@ document.getElementById('external-open-btn').onclick = () => {
     ? `https://www.youtube.com/watch?v=${ytId}`
     : (isDirectUrl(q)
         ? toFullUrl(q)
-        : (q ? `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}` : 'https://www.youtube.com'));
+        : (q ? `https://www.google.com/search?q=${encodeURIComponent(q)}` : 'https://www.google.com'));
   window.open(target, '_blank', 'noopener,noreferrer');
 };
 
