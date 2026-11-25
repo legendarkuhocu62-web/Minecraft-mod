@@ -16,6 +16,7 @@ let hostConn = null;
 let heartbeatTimer = null;
 let reconnectTimer = null;
 let activeRoomId = null;
+  if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
 let activeCreateAsHost = false;
 
 const DEFAULT_CROP = { left: 4, top: 18, width: 92, height: 42 };
@@ -588,6 +589,7 @@ function exitToMainMenu() {
   connections.clear();
   hostConn = null;
   activeRoomId = null;
+  if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
   activeCreateAsHost = false;
 
   roomState = {
@@ -728,6 +730,7 @@ function startRoom(roomId, createAsHost) {
   connections.clear();
   hostConn = null;
   activeRoomId = roomId;
+  if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
   activeCreateAsHost = createAsHost;
 
   roomState.id = roomId;
@@ -761,6 +764,7 @@ function startRoom(roomId, createAsHost) {
       connectGuestToHost(roomId);
     }
     startHeartbeat();
+    if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 500);
   });
 
   peer.on('disconnected', () => {
@@ -1578,6 +1582,7 @@ async function cbInit() {
     if (currentUser?.name) await cbEnsureProfile();
     await cbLoadSocial();
     cbSubscribeSocial();
+    cbStartPresence();
     cbSetSocialStatus('Подключено к синхронизации');
   } catch (e) {
     console.error('CoBrowser Supabase:', e);
@@ -1602,6 +1607,7 @@ async function cbEnsureProfile() {
   cbProfile = data;
   currentUser.supabaseId = cbAuthUser.id;
   localStorage.setItem('cobrowser_user', JSON.stringify(currentUser));
+  if (cbPresenceChannel) await cbTrackPresence();
   const idEl = document.getElementById('lobby-user-id');
   if (idEl) idEl.textContent = public_id;
 }
@@ -1732,6 +1738,14 @@ function cbInstallDmUI() {
   .dm-form{display:flex;gap:.55rem;padding:.75rem;border-top:1px solid var(--border,#343943)}
   .dm-form input{flex:1;min-width:0;border-radius:12px;padding:.8rem .9rem}
   .dm-form button{width:46px;flex:0 0 46px;border:0;border-radius:12px;background:var(--accent,#6862ed);color:white;font-size:1.2rem}
+
+  .friend-presence{font-size:.76rem;margin-top:.25rem}
+  .friend-presence.is-online{color:#55d99a}
+  .friend-presence.is-offline{color:#9298a5}
+  #friends-list .friend-item{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap}
+  #friends-list .friend-meta{flex:1;min-width:110px}
+  #friends-list .friend-actions{display:flex;gap:.35rem;flex-wrap:wrap}
+
   @media(max-width:600px){.dm-layout{grid-template-columns:1fr;min-height:0}.dm-sidebar{max-height:150px}.dm-friends{display:flex;gap:.3rem;max-height:100px;overflow-x:auto}.dm-friend{width:auto;min-width:100px;flex-direction:column;gap:.25rem;text-align:center}.dm-conversation{min-height:420px}.dm-messages{min-height:270px;max-height:360px}.lobby-tabs .tab-btn{font-size:.78rem}}
   `;
   document.head.appendChild(style);
@@ -1806,7 +1820,13 @@ function cbOverrideFriendUI() {
   window.renderFriends=function(){
     const list=document.getElementById('friends-list'),count=document.getElementById('friends-count');if(!list)return;count.textContent=friendsList.length;list.innerHTML='';
     if(!friendsList.length){list.innerHTML='<li class="friend-sub">Пока нет друзей</li>';return;}
-    friendsList.forEach(f=>{const li=document.createElement('li');li.className='friend-item';const avatar=document.createElement('img');avatar.src=getValidAvatar(f.avatar,f.name||f.userId);avatar.alt='';const meta=document.createElement('div');meta.className='friend-meta';const n=document.createElement('div');n.className='friend-name';n.textContent=f.name;const sub=document.createElement('div');sub.className='friend-sub';sub.textContent='ID: '+f.userId;meta.append(n,sub);li.append(avatar,meta);list.append(li);});
+    friendsList.forEach(f=>{const li=document.createElement('li');li.className='friend-item';const avatar=document.createElement('img');avatar.src=getValidAvatar(f.avatar,f.name||f.userId);avatar.alt='';const meta=document.createElement('div');meta.className='friend-meta';const n=document.createElement('div');n.className='friend-name';n.textContent=f.name;const sub=document.createElement('div');sub.className='friend-sub';sub.textContent='ID: '+f.userId;meta.append(n,sub);
+      const presence=document.createElement('div');presence.className='friend-presence';presence.dataset.presenceUser=f.supabaseId;
+      const online=Boolean(cbPresenceUsers[f.supabaseId]);presence.textContent=online?'● В сети':'○ Не в сети';presence.classList.add(online?'is-online':'is-offline');meta.append(presence);
+      const actions=document.createElement('div');actions.className='friend-actions';
+      const roomBtn=document.createElement('button');roomBtn.type='button';roomBtn.className='btn-secondary btn-small';roomBtn.textContent=(activeRoomId&&isHost())?'Пригласить':'Попроситься в комнату';
+      roomBtn.onclick=()=>{if(activeRoomId&&isHost())cbInviteFriendToRoom(f);else cbAskToJoinRoom(f);};
+      actions.append(roomBtn);li.append(avatar,meta,actions);list.append(li);});
   };
 }
 async function cbRefreshProfile() {
@@ -1825,3 +1845,104 @@ document.getElementById('save-profile-btn').onclick=async function(){
   if(cbAuthUser) await cbRefreshProfile();
 };
 cbInit();
+
+
+// ================= ONLINE / ROOM INVITES =================
+let cbPresenceChannel = null;
+let cbPresenceUsers = {};
+let cbPresenceReady = false;
+
+function cbPresenceSnapshot() {
+  const state = cbPresenceChannel?.presenceState?.() || {};
+  const found = {};
+  Object.values(state).flat().forEach(meta => {
+    if (meta?.user_id) found[meta.user_id] = meta;
+  });
+  cbPresenceUsers = found;
+  cbUpdatePresenceLabels();
+}
+async function cbTrackPresence() {
+  if (!cbPresenceChannel || !cbAuthUser || !cbProfile) return;
+  const roomCode = (activeRoomId || '').toString();
+  const meta = {
+    user_id: cbAuthUser.id,
+    public_id: cbProfile.public_id,
+    name: currentUser?.name || cbProfile.name,
+    avatar: getValidAvatar(currentUser?.avatar, currentUser?.name),
+    room_code: roomCode,
+    in_room: Boolean(roomCode),
+    is_host: Boolean(roomCode && isHost()),
+    updated_at: new Date().toISOString()
+  };
+  const { error } = await cbPresenceChannel.track(meta);
+  if (error) console.warn('Presence track:', error);
+  cbPresenceSnapshot();
+}
+function cbUpdatePresenceLabels() {
+  document.querySelectorAll('[data-presence-user]').forEach(el => {
+    const id = el.dataset.presenceUser;
+    const online = Boolean(cbPresenceUsers[id]);
+    el.textContent = online ? '● В сети' : '○ Не в сети';
+    el.classList.toggle('is-online', online);
+    el.classList.toggle('is-offline', !online);
+  });
+  document.querySelectorAll('[data-room-user]').forEach(el => {
+    const meta = cbPresenceUsers[el.dataset.roomUser];
+    el.textContent = meta?.in_room ? `В комнате ${meta.room_code}` : (meta ? 'В сети' : 'Не в сети');
+  });
+}
+function cbStartPresence() {
+  if (!cbSupabase || !cbAuthUser || cbPresenceChannel) return;
+  cbPresenceChannel = cbSupabase.channel('cobrowser-online-presence', {
+    config: { presence: { key: cbAuthUser.id }, broadcast: { self: false } }
+  });
+  cbPresenceChannel
+    .on('presence', { event: 'sync' }, cbPresenceSnapshot)
+    .on('presence', { event: 'join' }, cbPresenceSnapshot)
+    .on('presence', { event: 'leave' }, cbPresenceSnapshot)
+    .on('broadcast', { event: 'room-invite' }, ({payload}) => {
+      if (payload?.to !== cbAuthUser.id) return;
+      if (confirm(`${payload.from_name} приглашает тебя в комнату ${payload.room_code}. Войти?`)) {
+        cbPresenceChannel.send({type:'broadcast',event:'room-invite-accepted',payload:{to:payload.from,room_code:payload.room_code}});
+        startRoom(payload.room_code, false);
+      }
+    })
+    .on('broadcast', { event: 'room-join-request' }, async ({payload}) => {
+      if (payload?.to !== cbAuthUser.id || !isHost() || !activeRoomId) return;
+      if (confirm(`${payload.from_name} просится в твою комнату. Разрешить вход?`)) {
+        cbPresenceChannel.send({type:'broadcast',event:'room-invite',payload:{to:payload.from,from:cbAuthUser.id,from_name:currentUser.name,room_code:activeRoomId}});
+      }
+    })
+    .on('broadcast', { event: 'room-invite-accepted' }, ({payload}) => {
+      if (payload?.to === cbAuthUser.id) cbNotice('Друг принял приглашение и подключается к комнате.');
+    })
+    .subscribe(async status => {
+      if (status === 'SUBSCRIBED') {
+        cbPresenceReady = true;
+        await cbTrackPresence();
+        cbPresenceSnapshot();
+      }
+    });
+}
+async function cbInviteFriendToRoom(friend) {
+  const online = cbPresenceUsers[friend.supabaseId];
+  if (!online) return cbNotice('Друг сейчас не в сети.');
+  if (!activeRoomId || !isHost()) return cbNotice('Приглашать друзей может только создатель активной комнаты.');
+  const {error} = await cbPresenceChannel.send({type:'broadcast',event:'room-invite',payload:{
+    to:friend.supabaseId,from:cbAuthUser.id,from_name:currentUser.name,room_code:activeRoomId
+  }});
+  if (error) return cbNotice('Не удалось отправить приглашение: '+error.message);
+  cbNotice('Приглашение отправлено '+friend.name+'.');
+}
+async function cbAskToJoinRoom(friend) {
+  const online = cbPresenceUsers[friend.supabaseId];
+  if (!online?.in_room) return cbNotice('Друг сейчас не находится в комнате.');
+  if (online.is_host) {
+    const {error}=await cbPresenceChannel.send({type:'broadcast',event:'room-join-request',payload:{
+      to:friend.supabaseId,from:cbAuthUser.id,from_name:currentUser.name,room_code:online.room_code
+    }});
+    if(error)return cbNotice('Не удалось отправить запрос: '+error.message);
+    return cbNotice('Запрос на вход отправлен создателю комнаты.');
+  }
+  return cbNotice('Друг в комнате, но запросить вход можно только у её создателя.');
+}
