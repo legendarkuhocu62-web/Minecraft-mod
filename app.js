@@ -1,5 +1,10 @@
 const PEER_PREFIX = 'cobrowser_v1_';
 const RU_PROXY_PREFIX = '';
+const PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.adminforge.de',
+  'https://pipedapi.moomoo.me'
+];
 
 let currentUser = JSON.parse(localStorage.getItem('cobrowser_user')) || null;
 let friendsList = JSON.parse(localStorage.getItem('cobrowser_friends')) || [];
@@ -16,8 +21,9 @@ let hostConn = null;
 let heartbeatTimer = null;
 let reconnectTimer = null;
 let activeRoomId = null;
-  if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
+if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
 let activeCreateAsHost = false;
+let lastSearchedQuery = '';
 
 const DEFAULT_CROP = { left: 4, top: 18, width: 92, height: 42 };
 
@@ -62,6 +68,10 @@ function isHost() {
 
 function hasControl() {
   return peer && roomState.controllerPeerId === peer.id;
+}
+
+function canControlRoom() {
+  return Boolean(isHost() || hasControl());
 }
 
 function getMyUserId() {
@@ -183,11 +193,9 @@ function sendFriendRequest(targetUser) {
     toPeerId: targetUser.peerId || ''
   };
 
-  // Если знаем прямой peerId — шлём напрямую
   if (targetUser.peerId) {
     sendDirectPeerMessage(targetUser.peerId, reqPayload);
   }
-  // Если в комнате — можно маршрутизировать через хоста по userId/peerId
   if (hostConn && hostConn.open) {
     hostConn.send(reqPayload);
   } else if (isHost()) {
@@ -308,9 +316,9 @@ function renderFriendRequests() {
     meta.appendChild(subDiv);
     const presenceDiv = document.createElement('div');
     presenceDiv.className = 'friend-presence';
-    presenceDiv.dataset.presenceUser = f.supabaseId || '';
-    const onlineNow = Boolean(cbPresenceUsers[f.supabaseId]);
-    presenceDiv.textContent = onlineNow ? '● В сети' : `○ ${cbFormatLastSeen(f.lastSeenAt)}`;
+    presenceDiv.dataset.presenceUser = req.supabaseId || '';
+    const onlineNow = Boolean(cbPresenceUsers?.[req.supabaseId]);
+    presenceDiv.textContent = onlineNow ? '● В сети' : `○ ${cbFormatLastSeen(req.lastSeenAt)}`;
     presenceDiv.classList.add(onlineNow ? 'is-online' : 'is-offline');
     meta.appendChild(presenceDiv);
 
@@ -378,7 +386,7 @@ function renderFriends() {
     const presenceDiv = document.createElement('div');
     presenceDiv.className = 'friend-presence';
     presenceDiv.dataset.presenceUser = f.supabaseId || '';
-    const onlineNow = Boolean(cbPresenceUsers[f.supabaseId]);
+    const onlineNow = Boolean(cbPresenceUsers?.[f.supabaseId]);
     presenceDiv.textContent = onlineNow ? '● В сети' : `○ ${cbFormatLastSeen(f.lastSeenAt)}`;
     presenceDiv.classList.add(onlineNow ? 'is-online' : 'is-offline');
     meta.appendChild(presenceDiv);
@@ -603,6 +611,7 @@ function exitToMainMenu() {
   connections.clear();
   hostConn = null;
   activeRoomId = null;
+  lastSearchedQuery = '';
   if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
   activeCreateAsHost = false;
 
@@ -988,7 +997,7 @@ function setRuMode(enabled) {
     const sysMsg = {
       type: 'system',
       text: nextVal
-        ? '🇷🇺 Режим «Для России» включён — поиск в Google с регионом РФ'
+        ? '🇷🇺 Режим «Для России» включён'
         : 'Режим «Для России» выключен'
     };
     broadcastRaw(sysMsg);
@@ -1001,7 +1010,7 @@ function setRuMode(enabled) {
 }
 
 ruToggleBtn.onclick = () => {
-  if (!isHost() && !hasControl()) return;
+  if (!canControlRoom()) return;
   setRuMode(!roomState.ruMode);
 };
 
@@ -1010,11 +1019,11 @@ function updateRuModeUI() {
   ruToggleBtn.classList.toggle('active', active);
   ruToggleBtn.setAttribute('aria-pressed', String(active));
   ruToggleBtn.textContent = active ? 'Вкл' : 'Выкл';
-  ruToggleBtn.disabled = !(isHost() || hasControl());
+  ruToggleBtn.disabled = !canControlRoom();
 
   googleHint.textContent = active
-    ? '🇷🇺 Режим для России включён — поиск в Google по РФ'
-    : 'Введите запрос для поиска в Google или адрес сайта';
+    ? '🇷🇺 Режим для России включён — поиск видео и быстрый запуск в браузере'
+    : 'Введи запрос для поиска видео или вставь ссылку — откроется в браузере со звуком';
 }
 
 // --- РЕАЛЬНОЕ СРЕЗАНИЕ ПО РАМКЕ ---
@@ -1235,10 +1244,10 @@ function updateUI() {
     badge.textContent = '👀 Зритель';
   }
 
-  browserControls.style.display = (isHost() || hasControl()) ? 'flex' : 'none';
+  browserControls.style.display = canControlRoom() ? 'flex' : 'none';
 
   const framingNow = Boolean(roomState.videoFocus) && !roomState.cropApplied;
-  if (hasControl() || framingNow) {
+  if (canControlRoom() || framingNow) {
     shield.classList.add('hidden');
   } else {
     shield.classList.remove('hidden');
@@ -1321,11 +1330,12 @@ document.getElementById('copy-invite-btn').onclick = () => {
   });
 };
 
-// --- 3. ПОИСК GOOGLE И ОТКРЫВАТЕЛЬ САЙТОВ ---
+// --- 3. ЖИВОЙ ПОИСК YOUTUBE + ОТКРЫТИЕ В БРАУЗЕРЕ + СИНХРОНИЗАЦИЯ ---
 const iframe = document.getElementById('virtual-browser-frame');
 const googleLauncher = document.getElementById('google-launcher');
 const topInput = document.getElementById('neko-url-input');
 const googleQueryInput = document.getElementById('google-query-input');
+const ytSearchStatusEl = document.getElementById('yt-search-status');
 const searchResultsEl = document.getElementById('search-results');
 
 function isDirectUrl(raw) {
@@ -1343,61 +1353,199 @@ function toFullUrl(raw) {
   return base;
 }
 
-function buildGoogleSearchUrl(query, extraParam = '') {
-  const q = encodeURIComponent((query || '').trim());
-  const ruParams = roomState.ruMode ? '&gl=ru&hl=ru' : '';
-  return `https://www.google.com/search?q=${q}${extraParam}${ruParams}`;
+function extractYouTubeId(raw) {
+  if (!raw) return null;
+  try {
+    const normalized = /^https?:\/\//i.test(raw.trim()) ? raw.trim() : `https://${raw.trim()}`;
+    const u = new URL(normalized);
+    if (u.hostname.includes('youtu.be')) {
+      return u.pathname.replace('/', '').split('/')[0] || null;
+    }
+    if (u.hostname.includes('youtube.com')) {
+      if (u.searchParams.get('v')) return u.searchParams.get('v');
+      const parts = u.pathname.split('/').filter(Boolean);
+      const idx = parts.findIndex(p => p === 'shorts' || p === 'embed' || p === 'live');
+      if (idx !== -1 && parts[idx + 1]) return parts[idx + 1];
+    }
+  } catch (_) {}
+  return null;
 }
 
-function renderGoogleResults(query) {
-  searchResultsEl.innerHTML = '';
-  const q = (query || '').trim();
-  if (!q) return;
+function formatDuration(sec) {
+  if (!Number.isFinite(sec) || sec <= 0) return '';
+  return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+}
 
-  const items = [
-    {
-      title: `Найти в Google: «${q}»`,
-      url: buildGoogleSearchUrl(q)
-    },
-    {
-      title: `Картинки в Google: «${q}»`,
-      url: buildGoogleSearchUrl(q, '&tbm=isch')
-    },
-    {
-      title: `Видео в Google: «${q}»`,
-      url: buildGoogleSearchUrl(q, '&tbm=vid')
+function openExternalUrl(url, shareToRoom = true) {
+  if (!url) return;
+  if (shareToRoom && canControlRoom()) {
+    sendNavigation({
+      mode: 'search',
+      query: roomState.query || url,
+      browserUrl: url,
+      videoFocus: false,
+      cropApplied: false
+    });
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+function createVideoCard({ url, title, channel, durationSec, thumb }) {
+  const card = document.createElement('div');
+  card.className = 'yt-video-card';
+
+  const img = document.createElement('img');
+  img.className = 'yt-video-thumb';
+  img.src = thumb || '';
+  img.alt = title || 'Видео';
+  img.loading = 'lazy';
+
+  const info = document.createElement('div');
+  info.className = 'yt-video-info';
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'yt-video-title';
+  titleEl.textContent = title || 'Видео';
+
+  const dur = formatDuration(durationSec);
+  const metaText = [channel, dur, url].filter(Boolean).join(' • ');
+  const metaEl = document.createElement('div');
+  metaEl.className = 'yt-video-meta';
+  metaEl.textContent = metaText;
+
+  const actions = document.createElement('div');
+  actions.className = 'yt-video-actions';
+
+  const openBtn = document.createElement('button');
+  openBtn.type = 'button';
+  openBtn.className = 'btn-primary btn-small';
+  openBtn.textContent = '↗ Открыть в браузере';
+  openBtn.onclick = () => openExternalUrl(url, true);
+
+  const syncBtn = document.createElement('button');
+  syncBtn.type = 'button';
+  syncBtn.className = 'btn-secondary btn-small';
+  syncBtn.textContent = 'Синхронизировать';
+  syncBtn.onclick = () => {
+    if (!canControlRoom()) {
+      return alert('Синхронизировать ссылку может участник с пультом или Главный (👑).');
     }
-  ];
+    sendNavigation({
+      mode: 'search',
+      query: title || url,
+      browserUrl: url,
+      videoFocus: false,
+      cropApplied: false
+    });
+    if (ytSearchStatusEl) {
+      ytSearchStatusEl.textContent = `Ссылка синхронизирована в комнате: ${url}`;
+    }
+  };
 
-  items.forEach(item => {
-    const card = document.createElement('div');
-    card.className = 'result-card';
+  actions.append(openBtn, syncBtn);
+  info.append(titleEl, metaEl, actions);
+  card.append(img, info);
+  return card;
+}
 
-    const titleEl = document.createElement('div');
-    titleEl.className = 'r-title';
-    titleEl.textContent = item.title;
+async function renderSearchHub(query) {
+  const q = (query || '').trim();
+  searchResultsEl.innerHTML = '';
 
-    const urlEl = document.createElement('div');
-    urlEl.className = 'r-url';
-    urlEl.textContent = item.url;
+  if (!q) {
+    lastSearchedQuery = '';
+    if (ytSearchStatusEl) ytSearchStatusEl.textContent = '';
+    return;
+  }
 
-    const actions = document.createElement('div');
-    actions.className = 'r-actions';
+  const ytId = extractYouTubeId(q);
+  if (ytId) {
+    const watchUrl = `https://www.youtube.com/watch?v=${ytId}`;
+    lastSearchedQuery = q;
+    if (ytSearchStatusEl) {
+      ytSearchStatusEl.textContent = 'Ссылка на YouTube распознана — откроется в браузере со звуком';
+    }
+    searchResultsEl.appendChild(createVideoCard({
+      url: watchUrl,
+      title: 'Открыть видео на YouTube',
+      channel: 'YouTube',
+      durationSec: 0,
+      thumb: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`
+    }));
+    return;
+  }
 
-    const openTabBtn = document.createElement('button');
-    openTabBtn.type = 'button';
-    openTabBtn.className = 'btn-primary btn-small';
-    openTabBtn.textContent = 'Найти в Google';
-    openTabBtn.onclick = () => {
-      window.open(item.url, '_blank', 'noopener,noreferrer');
-    };
+  if (isDirectUrl(q)) {
+    const fullUrl = toFullUrl(q);
+    lastSearchedQuery = q;
+    if (ytSearchStatusEl) {
+      ytSearchStatusEl.textContent = 'Прямая ссылка — откроется в новом окне браузера';
+    }
+    searchResultsEl.appendChild(createVideoCard({
+      url: fullUrl,
+      title: 'Открыть сайт в браузере',
+      channel: fullUrl,
+      durationSec: 0,
+      thumb: ''
+    }));
+    return;
+  }
 
-    actions.appendChild(openTabBtn);
-    card.appendChild(titleEl);
-    card.appendChild(urlEl);
-    card.appendChild(actions);
-    searchResultsEl.appendChild(card);
-  });
+  if (q === lastSearchedQuery && searchResultsEl.children.length) return;
+  lastSearchedQuery = q;
+
+  if (ytSearchStatusEl) ytSearchStatusEl.textContent = `Ищу «${q}» на YouTube...`;
+
+  for (const base of PIPED_INSTANCES) {
+    try {
+      const res = await fetch(
+        `${base}/search?q=${encodeURIComponent(q)}&filter=videos`,
+        { signal: AbortSignal.timeout(4500) }
+      );
+      if (!res.ok) continue;
+      const data = await res.json();
+      const items = Array.isArray(data.items)
+        ? data.items
+            .filter(x => x.type === 'stream' || (x.url && x.url.includes('/watch?v=')))
+            .slice(0, 8)
+        : [];
+
+      if (!items.length) continue;
+
+      if (ytSearchStatusEl) {
+        ytSearchStatusEl.textContent = `Найдено видео: ${items.length} (клик откроет YouTube в браузере)`;
+      }
+
+      const frag = document.createDocumentFragment();
+      for (const v of items) {
+        const id = (v.url || '').split('/watch?v=')[1]?.split('&')[0];
+        if (!id) continue;
+        frag.appendChild(createVideoCard({
+          url: `https://www.youtube.com/watch?v=${id}`,
+          title: v.title || 'Без названия',
+          channel: v.uploaderName || 'YouTube',
+          durationSec: v.duration || 0,
+          thumb: v.thumbnail || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
+        }));
+      }
+      searchResultsEl.replaceChildren(frag);
+      return;
+    } catch (_) {
+      // Пробуем следующий инстанс Piped
+    }
+  }
+
+  const ytSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
+  if (ytSearchStatusEl) {
+    ytSearchStatusEl.textContent = 'API не ответил — открой выдачу напрямую на YouTube в браузере';
+  }
+  searchResultsEl.appendChild(createVideoCard({
+    url: ytSearchUrl,
+    title: `Открыть поиск «${q}» на YouTube`,
+    channel: 'YouTube Search',
+    durationSec: 0,
+    thumb: ''
+  }));
 }
 
 function applyBrowserState() {
@@ -1410,12 +1558,15 @@ function applyBrowserState() {
   } else {
     iframe.classList.add('hidden');
     googleLauncher.classList.remove('hidden');
-    if (roomState.query) {
-      googleQueryInput.value = roomState.query;
-      topInput.value = roomState.query;
-      renderGoogleResults(roomState.query);
-    } else {
+
+    const activeQuery = roomState.query || roomState.browserUrl || '';
+    if (activeQuery) {
+      if (document.activeElement !== googleQueryInput) googleQueryInput.value = activeQuery;
+      if (document.activeElement !== topInput) topInput.value = activeQuery;
+      renderSearchHub(activeQuery);
+    } else if (!lastSearchedQuery) {
       searchResultsEl.innerHTML = '';
+      if (ytSearchStatusEl) ytSearchStatusEl.textContent = '';
     }
   }
 }
@@ -1431,22 +1582,38 @@ function sendNavigation(nextState) {
   }
 }
 
-function handleSearchOrOpen(rawValue, openGoogleImmediately = false) {
+function handleSearchOrOpen(rawValue, openDirectIfUrl = false) {
   const val = (rawValue || '').trim();
   if (!val) {
+    lastSearchedQuery = '';
     sendNavigation({ mode: 'search', query: '', browserUrl: '', videoFocus: false, cropApplied: false });
+    return;
+  }
+
+  const ytId = extractYouTubeId(val);
+  if (ytId) {
+    const watchUrl = `https://www.youtube.com/watch?v=${ytId}`;
+    sendNavigation({ mode: 'search', query: watchUrl, browserUrl: watchUrl, videoFocus: false, cropApplied: false });
+    renderSearchHub(watchUrl);
+    if (openDirectIfUrl) {
+      window.open(watchUrl, '_blank', 'noopener,noreferrer');
+    }
     return;
   }
 
   if (isDirectUrl(val)) {
     const url = toFullUrl(val);
-    sendNavigation({ mode: 'frame', query: val, browserUrl: url, videoFocus: false, cropApplied: false });
-  } else {
-    sendNavigation({ mode: 'search', query: val, browserUrl: '', videoFocus: false, cropApplied: false });
-    if (openGoogleImmediately) {
-      window.open(buildGoogleSearchUrl(val), '_blank', 'noopener,noreferrer');
+    sendNavigation({ mode: 'search', query: url, browserUrl: url, videoFocus: false, cropApplied: false });
+    renderSearchHub(url);
+    if (openDirectIfUrl) {
+      window.open(url, '_blank', 'noopener,noreferrer');
     }
+    return;
   }
+
+  lastSearchedQuery = '';
+  sendNavigation({ mode: 'search', query: val, browserUrl: '', videoFocus: false, cropApplied: false });
+  renderSearchHub(val);
 }
 
 document.getElementById('connect-browser-btn').onclick = () => {
@@ -1461,21 +1628,24 @@ topInput.addEventListener('keydown', (e) => {
 });
 
 document.getElementById('google-search-btn').onclick = () => {
-  handleSearchOrOpen(googleQueryInput.value, true);
+  handleSearchOrOpen(googleQueryInput.value, false);
 };
 
 googleQueryInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    handleSearchOrOpen(googleQueryInput.value, true);
+    handleSearchOrOpen(googleQueryInput.value, false);
   }
 });
 
 document.getElementById('external-open-btn').onclick = () => {
-  const q = (topInput.value || googleQueryInput.value || roomState.query || '').trim();
-  const target = roomState.browserUrl
-    ? roomState.browserUrl
-    : (q ? buildGoogleSearchUrl(q) : 'https://www.google.com');
+  const q = (topInput.value || googleQueryInput.value || roomState.browserUrl || roomState.query || '').trim();
+  const ytId = extractYouTubeId(q);
+  const target = ytId
+    ? `https://www.youtube.com/watch?v=${ytId}`
+    : (isDirectUrl(q)
+        ? toFullUrl(q)
+        : (q ? `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}` : 'https://www.youtube.com'));
   window.open(target, '_blank', 'noopener,noreferrer');
 };
 
@@ -1701,7 +1871,6 @@ async function cbDeclineRequest(requestId) {
   await cbLoadSocial();
 }
 function cbInstallDmUI() {
-  const lobby = document.querySelector('#lobby-screen .lobby-content') || document.querySelector('#lobby-screen .lobby-card') || document.getElementById('lobby-tab-friends').parentElement;
   const tabBar = document.querySelector('.lobby-tabs');
   const chatTab = document.createElement('button');
   chatTab.type = 'button'; chatTab.id = 'tab-chat-btn'; chatTab.className = 'tab-btn';
@@ -1837,7 +2006,6 @@ function cbOverrideFriendUI() {
   const add=document.getElementById('add-friend-manual-btn');
   if(add)add.onclick=async()=>{const input=document.getElementById('friend-name-input');await cbSendFriendRequest(input.value);input.value='';};
   window.acceptFriendRequest=cbAcceptRequest;
-  // Existing renderers are replaced so database request IDs are used.
   window.renderFriendRequests=function(){
     const list=document.getElementById('friend-requests-list'), count=document.getElementById('requests-count'), badge=document.getElementById('friend-req-badge');
     if(!list)return;count.textContent=friendRequests.length;badge.textContent=friendRequests.length;badge.classList.toggle('hidden',!friendRequests.length);list.innerHTML='';
@@ -1867,7 +2035,6 @@ document.querySelector('.user-badge')?.after(socialStatus);
 const originalSaveProfile=document.getElementById('save-profile-btn').onclick;
 document.getElementById('save-profile-btn').onclick=async function(){
   if(originalSaveProfile) originalSaveProfile();
-  // Дождаться анонимной авторизации и сохранить публичный профиль в облако.
   for(let i=0;i<30&&!cbAuthUser;i++) await new Promise(r=>setTimeout(r,200));
   if(cbAuthUser) await cbRefreshProfile();
 };
@@ -1878,7 +2045,6 @@ cbInit();
 let cbPresenceChannel = null;
 let cbPresenceUsers = {};
 let cbPresenceReady = false;
-
 
 let cbLastSeenTimer = null;
 async function cbSaveLastSeen() {
@@ -1908,7 +2074,6 @@ function cbStartLastSeenHeartbeat() {
     if (document.visibilityState === 'visible') cbSaveLastSeen();
   });
   window.addEventListener('pagehide', () => {
-    // Best effort: the last periodic timestamp remains available if the browser closes abruptly.
     cbSaveLastSeen();
   });
 }
