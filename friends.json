@@ -1,0 +1,57 @@
+import json
+import os
+
+FRIENDS_FILE = "friends.json"
+
+
+def load_friends() -> dict[str, list[str]]:
+  if not os.path.exists(FRIENDS_FILE):
+    return {}
+  with open(FRIENDS_FILE, "r", encoding="utf-8") as f:
+    return json.load(f)
+
+
+def save_friends(data: dict[str, list[str]]) -> None:
+  with open(FRIENDS_FILE, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def normalize_tag(tag: str) -> str:
+  clean = tag.strip().upper().lstrip("#")
+  return f"#{clean}"
+
+
+def add_friend(user_id: int | str, friend_tag: str) -> tuple[bool, str]:
+  data = load_friends()
+  uid = str(user_id)
+  tag = normalize_tag(friend_tag)
+
+  if len(tag) < 4:
+    return False, "Слишком короткий тег."
+
+  user_friends = data.setdefault(uid, [])
+  if tag in user_friends:
+    return False, f"Игрок `{tag}` уже есть в твоём списке друзей."
+
+  user_friends.append(tag)
+  save_friends(data)
+  return True, f"Добавил `{tag}` в друзья."
+
+
+def remove_friend(user_id: int | str, friend_tag: str) -> tuple[bool, str]:
+  data = load_friends()
+  uid = str(user_id)
+  tag = normalize_tag(friend_tag)
+
+  user_friends = data.get(uid, [])
+  if tag not in user_friends:
+    return False, f"Тега `{tag}` нет в твоём списке друзей."
+
+  user_friends.remove(tag)
+  save_friends(data)
+  return True, f"Удалил `{tag}` из друзей."
+
+
+def get_friends(user_id: int | str) -> list[str]:
+  data = load_friends()
+  return data.get(str(user_id), [])

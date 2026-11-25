@@ -5,6 +5,8 @@ let currentUser = JSON.parse(localStorage.getItem('cobrowser_user')) || null;
 let friendsList = JSON.parse(localStorage.getItem('cobrowser_friends')) || [];
 let friendRequests = JSON.parse(localStorage.getItem('cobrowser_friend_requests')) || [];
 let outgoingRequests = JSON.parse(localStorage.getItem('cobrowser_outgoing_requests')) || [];
+// Общая база известных игроков (userId -> { userId, peerId, name, avatar, lastRoom, updatedAt })
+let usersDirectory = JSON.parse(localStorage.getItem('cobrowser_users_db')) || {};
 
 let avatarSeed = currentUser?.seed || Math.random().toString(36).substring(7);
 let pendingAvatarDataUrl = currentUser?.avatar || null;
@@ -78,6 +80,68 @@ function getValidAvatar(avatar, fallbackSeed) {
   return getGeneratedAvatarUrl(fallbackSeed || 'Guest');
 }
 
+// --- ОБЩАЯ БАЗА ИГРОКОВ И АВАТАРОК ---
+function saveUsersDirectory() {
+  localStorage.setItem('cobrowser_users_db', JSON.stringify(usersDirectory));
+}
+
+function registerKnownUser(profile) {
+  if (!profile) return null;
+  const uid = (profile.userId || profile.id || '').trim();
+  const key = uid || (profile.peerId ? `peer_${profile.peerId}` : '');
+  if (!key) return null;
+
+  const prev = usersDirectory[key] || {};
+  const name = (profile.name || prev.name || uid || 'Игрок').trim();
+  const avatar = getValidAvatar(profile.avatar || prev.avatar, name || key);
+
+  const entry = {
+    userId: uid || prev.userId || '',
+    peerId: profile.peerId || prev.peerId || '',
+    name,
+    avatar,
+    lastRoom: profile.roomId || profile.lastRoom || prev.lastRoom || '',
+    updatedAt: Date.now()
+  };
+
+  usersDirectory[key] = entry;
+  saveUsersDirectory();
+
+  // Синхронизируем аватарку и данные, если этот человек уже есть в друзьях
+  let friendChanged = false;
+  friendsList = friendsList.map(f => {
+    const match = (entry.userId && f.userId === entry.userId) ||
+                  (entry.peerId && f.peerId === entry.peerId);
+    if (match) {
+      friendChanged = true;
+      return {
+        ...f,
+        userId: entry.userId || f.userId,
+        peerId: entry.peerId || f.peerId,
+        name: entry.name,
+        avatar: entry.avatar,
+        lastRoom: entry.lastRoom || f.lastRoom
+      };
+    }
+    return f;
+  });
+
+  if (friendChanged) {
+    localStorage.setItem('cobrowser_friends', JSON.stringify(friendsList));
+    renderFriends();
+  }
+
+  return entry;
+}
+
+function resolveUserAvatar(userObj) {
+  if (!userObj) return getGeneratedAvatarUrl('Guest');
+  const key = userObj.userId || (userObj.peerId ? `peer_${userObj.peerId}` : '');
+  const fromDb = key ? usersDirectory[key] : null;
+  if (fromDb?.avatar) return getValidAvatar(fromDb.avatar, fromDb.name || key);
+  return getValidAvatar(userObj.avatar, userObj.name || userObj.userId);
+}
+
 // --- ДРУЗЬЯ И ЗАЯВКИ В ДРУЗЬЯ ---
 function persistFriendsData() {
   localStorage.setItem('cobrowser_friends', JSON.stringify(friendsList));
@@ -93,7 +157,7 @@ function isFriend(userObj) {
   return friendsList.some(f =>
     (userObj.userId && f.userId && f.userId === userObj.userId) ||
     (userObj.peerId && f.peerId && f.peerId === userObj.peerId) ||
-    (userObj.name && f.name && f.name.toLowerCase() === userObj.name.toLowerCase())
+    (!userObj.userId && !userObj.peerId && userObj.name && f.name && f.name.toLowerCase() === userObj.name.toLowerCase())
   );
 }
 
@@ -102,12 +166,14 @@ function hasOutgoingRequest(userObj) {
   return outgoingRequests.some(r =>
     (userObj.userId && r.userId && r.userId === userObj.userId) ||
     (userObj.peerId && r.peerId && r.peerId === userObj.peerId) ||
-    (userObj.name && r.name && r.name.toLowerCase() === userObj.name.toLowerCase())
+    (!userObj.userId && !userObj.peerId && userObj.name && r.name && r.name.toLowerCase() === userObj.name.toLowerCase())
   );
 }
 
 function upsertFriendRecord(record) {
-  const realAvatar = getValidAvatar(record.avatar, record.name || record.userId);
+  const registered = registerKnownUser(record);
+  const realAvatar = resolveUserAvatar(registered || record);
+
   const existingIdx = friendsList.findIndex(f =>
     (record.userId && f.userId && f.userId === record.userId) ||
     (record.peerId && f.peerId && f.peerId === record.peerId) ||
@@ -151,6 +217,16 @@ function sendDirectPeerMessage(targetPeerId, payload) {
   return true;
 }
 
+function getMyFullProfile() {
+  return {
+    userId: currentUser.id,
+    peerId: peer?.id || '',
+    name: currentUser.name,
+    avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name),
+    roomId: roomState.id || ''
+  };
+}
+
 function sendFriendRequest(targetUser) {
   if (!targetUser || !currentUser) return;
   const targetId = (targetUser.userId || targetUser.peerId || '').trim();
@@ -159,18 +235,15 @@ function sendFriendRequest(targetUser) {
   if (targetId && (targetId === currentUser.id || targetId === peer?.id)) return;
   if (isFriend(targetUser)) return;
 
-  const myProfile = {
-    userId: currentUser.id,
-    peerId: peer?.id || '',
-    name: currentUser.name,
-    avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name),
-    roomId: roomState.id || ''
-  };
+  const known = targetUser.userId ? usersDirectory[targetUser.userId] : null;
+  const resolvedPeerId = targetUser.peerId || known?.peerId || '';
+
+  const myProfile = getMyFullProfile();
 
   if (!hasOutgoingRequest(targetUser)) {
     outgoingRequests.push({
       userId: targetUser.userId || '',
-      peerId: targetUser.peerId || '',
+      peerId: resolvedPeerId,
       name: targetName
     });
   }
@@ -179,14 +252,12 @@ function sendFriendRequest(targetUser) {
     type: 'friend-request',
     from: myProfile,
     toUserId: targetUser.userId || '',
-    toPeerId: targetUser.peerId || ''
+    toPeerId: resolvedPeerId
   };
 
-  // Если знаем прямой peerId — шлём напрямую
-  if (targetUser.peerId) {
-    sendDirectPeerMessage(targetUser.peerId, reqPayload);
+  if (resolvedPeerId) {
+    sendDirectPeerMessage(resolvedPeerId, reqPayload);
   }
-  // Если в комнате — можно маршрутизировать через хоста по userId/peerId
   if (hostConn && hostConn.open) {
     hostConn.send(reqPayload);
   } else if (isHost()) {
@@ -201,22 +272,31 @@ function handleIncomingFriendRequest(msg) {
   const from = msg.from;
   if (!from) return;
   if (from.userId && from.userId === currentUser?.id) return;
+
+  registerKnownUser(from);
   if (isFriend(from)) return;
 
-  const exists = friendRequests.some(r =>
+  const cleanAvatar = getValidAvatar(from.avatar, from.name || from.userId);
+  const idx = friendRequests.findIndex(r =>
     (from.userId && r.userId === from.userId) ||
     (from.peerId && r.peerId === from.peerId)
   );
-  if (!exists) {
-    friendRequests.push({
-      userId: from.userId || '',
-      peerId: from.peerId || '',
-      name: from.name || 'Пользователь',
-      avatar: getValidAvatar(from.avatar, from.name || from.userId),
-      roomId: from.roomId || ''
-    });
+
+  const reqItem = {
+    userId: from.userId || '',
+    peerId: from.peerId || '',
+    name: from.name || 'Пользователь',
+    avatar: cleanAvatar,
+    roomId: from.roomId || ''
+  };
+
+  if (idx >= 0) {
+    friendRequests[idx] = { ...friendRequests[idx], ...reqItem };
     persistFriendsData();
-    addSystemMessage(`💌 Новое предложение в друзья от ${from.name}`);
+  } else {
+    friendRequests.push(reqItem);
+    persistFriendsData();
+    addSystemMessage(`💌 Новое предложение в друзья от ${reqItem.name}`);
   }
 }
 
@@ -225,29 +305,26 @@ function acceptFriendRequest(index) {
   if (!req) return;
   friendRequests.splice(index, 1);
 
+  const known = req.userId ? usersDirectory[req.userId] : null;
+  const targetPeerId = req.peerId || known?.peerId || '';
+
   upsertFriendRecord({
     userId: req.userId,
-    peerId: req.peerId,
+    peerId: targetPeerId,
     name: req.name,
     avatar: req.avatar,
-    lastRoom: req.roomId || roomState.id || ''
+    lastRoom: req.roomId || known?.lastRoom || roomState.id || ''
   });
 
   const acceptPayload = {
     type: 'friend-accept',
-    from: {
-      userId: currentUser.id,
-      peerId: peer?.id || '',
-      name: currentUser.name,
-      avatar: getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name),
-      roomId: roomState.id || ''
-    },
+    from: getMyFullProfile(),
     toUserId: req.userId || '',
-    toPeerId: req.peerId || ''
+    toPeerId: targetPeerId
   };
 
-  if (req.peerId) {
-    sendDirectPeerMessage(req.peerId, acceptPayload);
+  if (targetPeerId) {
+    sendDirectPeerMessage(targetPeerId, acceptPayload);
   }
   if (hostConn && hostConn.open) {
     hostConn.send(acceptPayload);
@@ -289,7 +366,7 @@ function renderFriendRequests() {
     li.className = 'friend-item';
 
     const img = document.createElement('img');
-    img.src = getValidAvatar(req.avatar, req.name || req.userId);
+    img.src = resolveUserAvatar(req);
     img.alt = req.name;
 
     const meta = document.createElement('div');
@@ -345,24 +422,28 @@ function renderFriends() {
   }
 
   friendsList.forEach((f, idx) => {
+    const known = f.userId ? usersDirectory[f.userId] : null;
+    const displayName = known?.name || f.name;
+    const displayRoom = known?.lastRoom || f.lastRoom;
+
     const li = document.createElement('li');
     li.className = 'friend-item';
 
     const img = document.createElement('img');
-    img.src = getValidAvatar(f.avatar, f.name || f.userId);
-    img.alt = f.name;
+    img.src = resolveUserAvatar({ ...f, ...known });
+    img.alt = displayName;
 
     const meta = document.createElement('div');
     meta.className = 'friend-meta';
 
     const nameDiv = document.createElement('div');
     nameDiv.className = 'friend-name';
-    nameDiv.textContent = f.name;
+    nameDiv.textContent = displayName;
 
     const subDiv = document.createElement('div');
     subDiv.className = 'friend-sub';
     const idPart = f.userId ? `ID: ${f.userId}` : 'Друг';
-    const roomPart = f.lastRoom ? ` · Комната: ${f.lastRoom}` : '';
+    const roomPart = displayRoom ? ` · Комната: ${displayRoom}` : '';
     subDiv.textContent = `${idPart}${roomPart}`;
 
     meta.appendChild(nameDiv);
@@ -371,12 +452,12 @@ function renderFriends() {
     const actions = document.createElement('div');
     actions.className = 'friend-actions';
 
-    if (f.lastRoom) {
+    if (displayRoom) {
       const joinBtn = document.createElement('button');
       joinBtn.type = 'button';
       joinBtn.className = 'btn-primary btn-small';
       joinBtn.textContent = 'Войти';
-      joinBtn.onclick = () => startRoom(f.lastRoom.toUpperCase(), false);
+      joinBtn.onclick = () => startRoom(displayRoom.toUpperCase(), false);
       actions.appendChild(joinBtn);
     }
 
@@ -415,11 +496,18 @@ document.getElementById('add-friend-manual-btn').onclick = () => {
   const input = document.getElementById('friend-name-input');
   const val = input.value.trim();
   if (!val) return;
+
   const inRoomUser = roomState.users.find(u =>
     u.userId === val || u.peerId === val || u.name.toLowerCase() === val.toLowerCase()
   );
+  const inDbUser = Object.values(usersDirectory).find(u =>
+    u.userId === val || u.peerId === val || u.name.toLowerCase() === val.toLowerCase()
+  );
+
   if (inRoomUser) {
     sendFriendRequest(inRoomUser);
+  } else if (inDbUser) {
+    sendFriendRequest(inDbUser);
   } else if (val.startsWith('u_')) {
     sendFriendRequest({ userId: val, name: val });
   } else {
@@ -543,6 +631,13 @@ document.getElementById('save-profile-btn').onclick = () => {
     avatar: finalAvatar
   };
   localStorage.setItem('cobrowser_user', JSON.stringify(currentUser));
+  registerKnownUser({
+    userId: currentUser.id,
+    peerId: peer?.id || '',
+    name: currentUser.name,
+    avatar: currentUser.avatar,
+    roomId: roomState.id || ''
+  });
 
   if (pendingInviteRoom) {
     const roomToJoin = pendingInviteRoom;
@@ -750,6 +845,7 @@ function startRoom(roomId, createAsHost) {
   peer.on('open', (myPeerId) => {
     setConnStatus('● онлайн', 'ok');
     const me = buildMePayload(myPeerId);
+    registerKnownUser({ ...me, roomId });
 
     if (createAsHost) {
       roomState.hostPeerId = myPeerId;
@@ -785,6 +881,7 @@ function startRoom(roomId, createAsHost) {
     conn.on('data', (msg) => {
       if (!msg || msg.type === 'ping' || msg.type === 'pong') return;
       if (msg.type === 'friend-request') {
+        if (msg.from) registerKnownUser({ ...msg.from, roomId: msg.from.roomId || roomState.id || '' });
         if (isHost() && (msg.toUserId || msg.toPeerId)) {
           const target = roomState.users.find(u =>
             (msg.toUserId && u.userId === msg.toUserId) ||
@@ -801,6 +898,7 @@ function startRoom(roomId, createAsHost) {
         return;
       }
       if (msg.type === 'friend-accept') {
+        if (msg.from) registerKnownUser({ ...msg.from, roomId: msg.from.roomId || roomState.id || '' });
         if (isHost() && (msg.toUserId || msg.toPeerId)) {
           const target = roomState.users.find(u =>
             (msg.toUserId && u.userId === msg.toUserId) ||
@@ -877,6 +975,7 @@ function handleMessageAtHost(fromPeerId, msg) {
       ...msg.user,
       avatar: getValidAvatar(msg.user.avatar, msg.user.name || msg.user.userId)
     };
+    registerKnownUser({ ...cleanUser, roomId: roomState.id || '' });
     const idx = roomState.users.findIndex(u => u.peerId === cleanUser.peerId);
     if (idx >= 0) {
       roomState.users[idx] = cleanUser;
@@ -892,6 +991,7 @@ function handleMessageAtHost(fromPeerId, msg) {
       avatar: getValidAvatar(msg.sender?.avatar, msg.sender?.name || msg.sender?.userId),
       isHost: msg.sender?.peerId === roomState.hostPeerId
     };
+    registerKnownUser({ ...senderObj, roomId: roomState.id || '' });
     const payload = { type: 'chat', sender: senderObj, text: msg.text };
     broadcastRaw(payload);
     appendChatMessage(senderObj, msg.text);
@@ -920,8 +1020,12 @@ function handleMessageAtHost(fromPeerId, msg) {
 function handleMessageFromHost(msg) {
   if (msg.type === 'state') {
     roomState = msg.state;
+    if (Array.isArray(roomState.users)) {
+      roomState.users.forEach(u => registerKnownUser({ ...u, roomId: roomState.id || '' }));
+    }
     updateUI();
   } else if (msg.type === 'chat') {
+    if (msg.sender) registerKnownUser({ ...msg.sender, roomId: roomState.id || '' });
     appendChatMessage(msg.sender, msg.text);
   } else if (msg.type === 'system') {
     addSystemMessage(msg.text);
@@ -1253,7 +1357,7 @@ function renderUsers() {
     const isSelf = (peer && u.peerId === peer.id) || (currentUser && u.userId === currentUser.id);
 
     const img = document.createElement('img');
-    img.src = getValidAvatar(u.avatar, u.name || u.userId);
+    img.src = resolveUserAvatar(u);
 
     const nameSpan = document.createElement('span');
     nameSpan.className = 'name';
@@ -1482,7 +1586,7 @@ function appendChatMessage(sender, text) {
 
   const img = document.createElement('img');
   img.className = 'msg-avatar';
-  img.src = getValidAvatar(senderObj.avatar, senderObj.name || senderObj.userId);
+  img.src = resolveUserAvatar(senderObj);
   img.alt = senderObj.name || '';
 
   const body = document.createElement('div');
@@ -1535,6 +1639,13 @@ const inviteRoomFromUrl = new URLSearchParams(window.location.search).get('room'
 
 if (currentUser && currentUser.name) {
   currentUser.avatar = getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name);
+  registerKnownUser({
+    userId: currentUser.id,
+    peerId: '',
+    name: currentUser.name,
+    avatar: currentUser.avatar,
+    roomId: inviteRoomFromUrl ? inviteRoomFromUrl.toUpperCase() : ''
+  });
   if (inviteRoomFromUrl) {
     startRoom(inviteRoomFromUrl.toUpperCase(), false);
   } else {
