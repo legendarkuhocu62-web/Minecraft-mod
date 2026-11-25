@@ -1,3 +1,4 @@
+
 const PEER_PREFIX = 'cobrowser_v1_';
 const RU_PROXY_PREFIX = '';
 
@@ -9,18 +10,17 @@ let peer = null;
 let connections = new Map();
 let hostConn = null;
 
+let slidersOpen = true;
+
 let roomState = {
   id: null,
   hostPeerId: null,
   controllerPeerId: null,
   ruMode: false,
   videoFocus: false,
-  cutTop: 18,
-  cutBottom: 22,
-  cutLeft: 0,
-  cutRight: 0,
-  vfZoom: 115,
-  vfY: -20,
+  vfZoom: 120,
+  vfX: 0,
+  vfY: -40,
   mode: 'search', // 'search' | 'frame'
   query: '',
   browserUrl: '',
@@ -388,27 +388,23 @@ function updateRuModeUI() {
     : 'Введите запрос для поиска в Google или адрес сайта';
 }
 
-// --- РУЧНАЯ ОБРЕЗКА И ФОКУС НА ВИДЕО ---
+// --- ПОДРАВНИВАНИЕ КАДРА КАК НА АВАТАРКЕ (МАСШТАБ + СДВИГ X/Y) ---
 const workspaceEl = document.getElementById('workspace');
 const browserBox = document.getElementById('browser-container');
 const siteViewActions = document.getElementById('site-view-actions');
 const videoFocusBtn = document.getElementById('video-focus-btn');
 const expandBrowserBtn = document.getElementById('expand-browser-btn');
 const exitExpandBtn = document.getElementById('exit-expand-btn');
+const focusHeaderStrip = document.getElementById('focus-header-strip');
+const toggleSlidersBtn = document.getElementById('toggle-sliders-btn');
 const videoCropBar = document.getElementById('video-crop-bar');
 
-const cutTopInput = document.getElementById('cut-top');
-const cutBottomInput = document.getElementById('cut-bottom');
-const cutLeftInput = document.getElementById('cut-left');
-const cutRightInput = document.getElementById('cut-right');
 const vfZoomInput = document.getElementById('vf-zoom');
+const vfXInput = document.getElementById('vf-x');
 const vfYInput = document.getElementById('vf-y');
 
-const cutTopVal = document.getElementById('cut-top-val');
-const cutBottomVal = document.getElementById('cut-bottom-val');
-const cutLeftVal = document.getElementById('cut-left-val');
-const cutRightVal = document.getElementById('cut-right-val');
 const vfZoomVal = document.getElementById('vf-zoom-val');
+const vfXVal = document.getElementById('vf-x-val');
 const vfYVal = document.getElementById('vf-y-val');
 
 function isSiteOpened() {
@@ -430,30 +426,32 @@ function syncVideoFocusPayload(patch) {
 
 videoFocusBtn.onclick = () => {
   if (!isSiteOpened()) return;
-  syncVideoFocusPayload({ videoFocus: !roomState.videoFocus });
+  const nextFocus = !roomState.videoFocus;
+  if (nextFocus) slidersOpen = true;
+  syncVideoFocusPayload({ videoFocus: nextFocus });
 };
 
-function bindCropSlider(inputEl, key, formatter) {
-  inputEl.oninput = () => {
-    const val = Number(inputEl.value);
-    syncVideoFocusPayload({ [key]: val });
-  };
-}
+toggleSlidersBtn.onclick = () => {
+  slidersOpen = !slidersOpen;
+  applyVideoFocusUI();
+};
 
-bindCropSlider(cutTopInput, 'cutTop');
-bindCropSlider(cutBottomInput, 'cutBottom');
-bindCropSlider(cutLeftInput, 'cutLeft');
-bindCropSlider(cutRightInput, 'cutRight');
-bindCropSlider(vfZoomInput, 'vfZoom');
-bindCropSlider(vfYInput, 'vfY');
+vfZoomInput.oninput = () => {
+  syncVideoFocusPayload({ vfZoom: Number(vfZoomInput.value) });
+};
+
+vfXInput.oninput = () => {
+  syncVideoFocusPayload({ vfX: Number(vfXInput.value) });
+};
+
+vfYInput.oninput = () => {
+  syncVideoFocusPayload({ vfY: Number(vfYInput.value) });
+};
 
 document.getElementById('reset-crop-btn').onclick = () => {
   syncVideoFocusPayload({
-    cutTop: 0,
-    cutBottom: 0,
-    cutLeft: 0,
-    cutRight: 0,
     vfZoom: 100,
+    vfX: 0,
     vfY: 0
   });
 };
@@ -471,37 +469,29 @@ function applyVideoFocusUI() {
   }
 
   const active = Boolean(roomState.videoFocus) && opened;
-  const top = Number(roomState.cutTop ?? 18);
-  const bottom = Number(roomState.cutBottom ?? 22);
-  const left = Number(roomState.cutLeft ?? 0);
-  const right = Number(roomState.cutRight ?? 0);
-  const zoom = Number(roomState.vfZoom ?? 115);
-  const y = Number(roomState.vfY ?? -20);
+  const zoom = Number(roomState.vfZoom ?? 120);
+  const x = Number(roomState.vfX ?? 0);
+  const y = Number(roomState.vfY ?? -40);
 
-  cutTopInput.value = top;
-  cutBottomInput.value = bottom;
-  cutLeftInput.value = left;
-  cutRightInput.value = right;
   vfZoomInput.value = zoom;
+  vfXInput.value = x;
   vfYInput.value = y;
 
-  cutTopVal.textContent = `${top}%`;
-  cutBottomVal.textContent = `${bottom}%`;
-  cutLeftVal.textContent = `${left}%`;
-  cutRightVal.textContent = `${right}%`;
   vfZoomVal.textContent = `${zoom}%`;
+  vfXVal.textContent = `${x}px`;
   vfYVal.textContent = `${y}px`;
 
   workspaceEl.classList.toggle('video-focus', active);
   videoFocusBtn.classList.toggle('active-focus', active);
   videoFocusBtn.textContent = active ? '🎬 Обычный вид' : '🎬 Фокус на видео';
-  videoCropBar.classList.toggle('hidden', !active);
+
+  focusHeaderStrip.classList.toggle('hidden', !active);
+  videoCropBar.classList.toggle('hidden', !active || !slidersOpen);
+  toggleSlidersBtn.textContent = slidersOpen ? 'Скрыть ползунки' : '⚙ Настроить кадр';
 
   if (active) {
-    iframe.style.clipPath = `inset(${top}% ${right}% ${bottom}% ${left}%)`;
-    iframe.style.transform = `translateY(${y}px) scale(${zoom / 100})`;
+    iframe.style.transform = `translate(${x}px, ${y}px) scale(${zoom / 100})`;
   } else {
-    iframe.style.clipPath = 'none';
     iframe.style.transform = 'none';
   }
 }
@@ -829,4 +819,3 @@ if (currentUser) {
   updateAvatarPreview();
   showScreen('profile');
 }
-

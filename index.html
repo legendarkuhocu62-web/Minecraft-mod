@@ -109,30 +109,24 @@
       <div id="browser-container" class="browser-container">
         <button type="button" id="exit-expand-btn" class="exit-expand-btn hidden">✕ Свернуть</button>
 
+        <div id="focus-header-strip" class="focus-header-strip hidden">
+          <span class="focus-title">Кадр подровнен как скриншот</span>
+          <div class="focus-strip-btns">
+            <button type="button" id="toggle-sliders-btn" class="btn-small btn-secondary">⚙ Настроить кадр</button>
+            <button type="button" id="reset-crop-btn" class="btn-small btn-secondary">Сброс</button>
+          </div>
+        </div>
+
         <div id="video-crop-bar" class="video-crop-bar hidden">
-          <div class="crop-grid">
-            <label>Срезать сверху: <span id="cut-top-val">18%</span>
-              <input type="range" id="cut-top" min="0" max="60" value="18">
-            </label>
-            <label>Срезать снизу: <span id="cut-bottom-val">22%</span>
-              <input type="range" id="cut-bottom" min="0" max="60" value="22">
-            </label>
-            <label>Срезать слева: <span id="cut-left-val">0%</span>
-              <input type="range" id="cut-left" min="0" max="45" value="0">
-            </label>
-            <label>Срезать справа: <span id="cut-right-val">0%</span>
-              <input type="range" id="cut-right" min="0" max="45" value="0">
-            </label>
-            <label>Зум: <span id="vf-zoom-val">115%</span>
-              <input type="range" id="vf-zoom" min="100" max="200" value="115">
-            </label>
-            <label>Сдвиг вверх/вниз: <span id="vf-y-val">-20px</span>
-              <input type="range" id="vf-y" min="-180" max="180" value="-20">
-            </label>
-          </div>
-          <div class="crop-bar-footer">
-            <button type="button" id="reset-crop-btn" class="btn-secondary btn-small">Сбросить обрезку</button>
-          </div>
+          <label>Масштаб: <span id="vf-zoom-val">120%</span>
+            <input type="range" id="vf-zoom" min="100" max="240" value="120">
+          </label>
+          <label>Влево / вправо: <span id="vf-x-val">0px</span>
+            <input type="range" id="vf-x" min="-220" max="220" value="0">
+          </label>
+          <label>Вверх / вниз: <span id="vf-y-val">-40px</span>
+            <input type="range" id="vf-y" min="-260" max="260" value="-40">
+          </label>
         </div>
 
         <div id="google-launcher" class="google-launcher">
