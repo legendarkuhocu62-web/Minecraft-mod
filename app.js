@@ -1030,8 +1030,8 @@ function updateRuModeUI() {
   ruToggleBtn.disabled = !canControlRoom();
 
   googleHint.textContent = active
-    ? '🇷🇺 Режим для России включён — поиск видео и быстрый запуск в браузере'
-    : 'Введи запрос для поиска видео или вставь ссылку — откроется в браузере со звуком';
+    ? '🇷🇺 Режим для России включён — общий поиск и быстрый запуск в браузере'
+    : 'Введи поисковый запрос или вставь ссылку — откроется в браузере со звуком';
 }
 
 // --- РЕАЛЬНОЕ СРЕЗАНИЕ ПО РАМКЕ ---
@@ -1630,8 +1630,8 @@ async function renderSearchHub(query) {
   }
   searchResultsEl.appendChild(createVideoCard({
     url: ytSearchUrl,
-    title: `Поиск «${q}» на YouTube`,
-    channel: 'YouTube',
+    title: `Поиск «${q}» в сети`,
+    channel: 'Поиск',
     durationSec: 0,
     thumb: ''
   }));
@@ -2422,3 +2422,37 @@ async function cbAskToJoinRoom(friend) {
   }
   return cbNotice('Друг в комнате, но запросить вход можно только у её создателя.');
 }
+
+
+(function polishSearchHubUI() {
+  const style = document.createElement('style');
+  style.textContent = `
+    #google-launcher {
+      border-radius: 16px;
+      padding: 1.25rem;
+      background: rgba(18, 21, 31, 0.72);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    #google-launcher h2,
+    #google-launcher .launcher-title,
+    #google-launcher .search-title {
+      margin-top: 0;
+    }
+    #search-results:empty {
+      display: none;
+    }
+  `;
+  document.head.appendChild(style);
+
+  const launcher = document.getElementById('google-launcher');
+  if (!launcher) return;
+
+  launcher.querySelectorAll('h1, h2, h3, p, label, span, button, input').forEach((el) => {
+    if (typeof el.textContent === 'string' && el.textContent.includes('YouTube • Поиск и запуск в браузере')) {
+      el.textContent = 'Поисковик и быстрый запуск';
+    }
+    if (el.tagName === 'INPUT' && typeof el.placeholder === 'string' && el.placeholder.includes('Что ищем на YouTube')) {
+      el.placeholder = 'Что ищем или ссылка...';
+    }
+  });
+})();
