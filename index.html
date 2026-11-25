@@ -86,10 +86,16 @@
         <span class="badge-host" id="role-badge">👑 Вы Главный</span>
         <span>Комната: <strong id="current-room-id"></strong></span>
         <button id="copy-invite-btn" class="btn-small btn-secondary">Копировать ссылку</button>
+
+        <!-- ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА ДЛЯ РОССИИ -->
+        <div class="ru-mode-box">
+          <span class="ru-label">🇷🇺 Для России</span>
+          <button type="button" id="ru-toggle-btn" class="ru-switch" aria-pressed="false">Выкл</button>
+        </div>
       </div>
 
       <div class="browser-connect">
-        <input type="text" id="neko-url-input" placeholder="Поиск Google или адрес сайта...">
+        <input type="text" id="neko-url-input" placeholder="Поиск Google, сериал или адрес сайта...">
         <button id="connect-browser-btn" class="btn-primary btn-small">Найти / Открыть</button>
         <button id="external-open-btn" class="btn-secondary btn-small" title="Открыть в новой вкладке">↗ Вкладка</button>
       </div>
@@ -97,13 +103,13 @@
 
     <main class="workspace">
       <div class="browser-container">
-        <!-- ВСТРОЕННЫЙ ПОИСК GOOGLE И ОТКРЫВАТЕЛЬ САЙТОВ -->
+        <!-- ВСТРОЕННЫЙ ПОИСК И ОТКРЫВАТЕЛЬ САЙТОВ -->
         <div id="google-launcher" class="google-launcher">
           <div class="google-logo"><span>G</span><span>o</span><span>o</span><span>g</span><span>l</span><span>e</span></div>
-          <p class="google-hint">Введи поисковый запрос или ссылку на сайт — откроем всем в комнате</p>
+          <p id="google-hint" class="google-hint">Введи поисковый запрос, название сериала или ссылку на сайт</p>
           <div class="google-search-box">
-            <input type="text" id="google-query-input" placeholder="Что ищем в Google или какой сайт открыть?">
-            <button type="button" id="google-search-btn" class="btn-primary">Поиск Google</button>
+            <input type="text" id="google-query-input" placeholder="Например: Воронины сериал или ссылка на сайт...">
+            <button type="button" id="google-search-btn" class="btn-primary">Найти</button>
           </div>
           <div id="search-results" class="search-results"></div>
         </div>
