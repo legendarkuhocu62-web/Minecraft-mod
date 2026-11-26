@@ -1,17 +1,17 @@
-const GOOGLE_SEARCH_API_KEY = 'AIzaSyCnieC9wrpTKLYq0OQPEmYX_NORgJR4Hv4';
-const GOOGLE_CSE_CX = '84e78df5e6f6e4afa'; // Опционально: ID поисковика (cx) из Programmable Search Engine
-
 const PEER_PREFIX = 'cobrowser_v1_';
 const RU_PROXY_PREFIX = '';
-const PIPED_INSTANCES = [
-  'https://pipedapi.kavin.rocks',
-  'https://pipedapi.adminforge.de',
-  'https://pipedapi.moomoo.me'
-];
-const INVIDIOUS_INSTANCES = [
-  'https://inv.nadeko.net',
-  'https://yewtu.be',
-  'https://invidious.nerdvpn.de'
+const SESSION_KEY = 'cobrowser_session';       // sessionStorage: был ли я хостом этой комнаты в этой вкладке
+const ROOM_STATE_PREFIX = 'cobrowser_room_';    // localStorage: сохранённое состояние комнаты хоста
+
+// STUN + TURN. Без TURN соединение между людьми за NAT (мобильные сети, провайдеры РФ)
+// часто вообще не устанавливается или идёт очень долго.
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
 ];
 
 let currentUser = JSON.parse(localStorage.getItem('cobrowser_user')) || null;
@@ -29,9 +29,13 @@ let hostConn = null;
 let heartbeatTimer = null;
 let reconnectTimer = null;
 let activeRoomId = null;
-if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
 let activeCreateAsHost = false;
-let lastSearchedQuery = '';
+let cbPresenceChannel = null;
+let cbPresenceUsers = {};
+let cbPresenceReady = false;
+let hostRetryCount = 0;
+let hostRetryTimer = null;
+let guestRetryCount = 0;
 
 const DEFAULT_CROP = { left: 4, top: 18, width: 92, height: 42 };
 
@@ -46,6 +50,8 @@ let roomState = {
   mode: 'search', // 'search' | 'frame'
   query: '',
   browserUrl: '',
+  media: null,        // { playing, time } — синхронизация видео
+  sharePeerId: null,  // кто сейчас транслирует экран
   users: []
 };
 
@@ -76,10 +82,6 @@ function isHost() {
 
 function hasControl() {
   return peer && roomState.controllerPeerId === peer.id;
-}
-
-function canControlRoom() {
-  return Boolean(isHost() || hasControl());
 }
 
 function getMyUserId() {
@@ -201,9 +203,11 @@ function sendFriendRequest(targetUser) {
     toPeerId: targetUser.peerId || ''
   };
 
+  // Если знаем прямой peerId — шлём напрямую
   if (targetUser.peerId) {
     sendDirectPeerMessage(targetUser.peerId, reqPayload);
   }
+  // Если в комнате — можно маршрутизировать через хоста по userId/peerId
   if (hostConn && hostConn.open) {
     hostConn.send(reqPayload);
   } else if (isHost()) {
@@ -322,13 +326,6 @@ function renderFriendRequests() {
 
     meta.appendChild(nameDiv);
     meta.appendChild(subDiv);
-    const presenceDiv = document.createElement('div');
-    presenceDiv.className = 'friend-presence';
-    presenceDiv.dataset.presenceUser = req.supabaseId || '';
-    const onlineNow = Boolean(cbPresenceUsers?.[req.supabaseId]);
-    presenceDiv.textContent = onlineNow ? '● В сети' : `○ ${cbFormatLastSeen(req.lastSeenAt)}`;
-    presenceDiv.classList.add(onlineNow ? 'is-online' : 'is-offline');
-    meta.appendChild(presenceDiv);
 
     const actions = document.createElement('div');
     actions.className = 'friend-actions';
@@ -394,7 +391,7 @@ function renderFriends() {
     const presenceDiv = document.createElement('div');
     presenceDiv.className = 'friend-presence';
     presenceDiv.dataset.presenceUser = f.supabaseId || '';
-    const onlineNow = Boolean(cbPresenceUsers?.[f.supabaseId]);
+    const onlineNow = Boolean(cbPresenceUsers[f.supabaseId]);
     presenceDiv.textContent = onlineNow ? '● В сети' : `○ ${cbFormatLastSeen(f.lastSeenAt)}`;
     presenceDiv.classList.add(onlineNow ? 'is-online' : 'is-offline');
     meta.appendChild(presenceDiv);
@@ -611,37 +608,33 @@ function openLobby() {
 
 // --- ВЫХОД В ГЛАВНОЕ МЕНЮ ---
 function exitToMainMenu() {
+  const leavingRoom = activeRoomId;
+  const wasHost = activeCreateAsHost;
   clearRoomTimers();
+  if (hostRetryTimer) { clearTimeout(hostRetryTimer); hostRetryTimer = null; }
+  stopScreenShare(true);
+  clearRemoteScreen();
+  unmountSite();
   if (peer) {
-    try { peer.destroy(); } catch (_) {}
+    const old = peer;
     peer = null;
+    try { old.destroy(); } catch (_) {}
   }
   connections.clear();
   hostConn = null;
   activeRoomId = null;
-  lastSearchedQuery = '';
-  if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
   activeCreateAsHost = false;
+  if (wasHost && leavingRoom) forgetMyRoom(leavingRoom);
+  saveSession();
+  if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
 
-  roomState = {
-    id: null,
-    hostPeerId: null,
-    controllerPeerId: null,
-    ruMode: false,
-    videoFocus: false,
-    cropApplied: false,
-    cropRect: { ...DEFAULT_CROP },
-    mode: 'search',
-    query: '',
-    browserUrl: '',
-    users: []
-  };
+  roomState = makeEmptyRoomState();
 
-  window.history.pushState({}, '', window.location.pathname);
+  window.history.replaceState({}, '', window.location.pathname);
   document.getElementById('chat-messages').innerHTML = '';
-  document.getElementById('virtual-browser-frame').src = '';
-  document.getElementById('virtual-browser-frame').classList.add('hidden');
   document.getElementById('google-launcher').classList.remove('hidden');
+  browserBox.classList.remove('expanded');
+  exitExpandBtn.classList.add('hidden');
 
   openLobby();
 }
@@ -680,53 +673,182 @@ function buildMePayload(myPeerId) {
   };
 }
 
-function connectGuestToHost(roomId) {
-  if (!peer || peer.destroyed || !currentUser) return;
-  const hostPeerId = `${PEER_PREFIX}${roomId}`;
-  const me = buildMePayload(peer.id);
-
+// ---------- Сессия: чтобы F5 не ломал комнату ----------
+function saveSession() {
   try {
-    if (hostConn && hostConn.open) return;
-    hostConn = peer.connect(hostPeerId, { reliable: true });
-    setConnStatus('● подключение...', 'warn');
+    if (activeRoomId) sessionStorage.setItem(SESSION_KEY, JSON.stringify({ roomId: activeRoomId, host: activeCreateAsHost }));
+    else sessionStorage.removeItem(SESSION_KEY);
+  } catch (_) {}
+}
 
-    hostConn.on('open', () => {
-      setConnStatus('● онлайн', 'ok');
-      hostConn.send({ type: 'join', user: me });
-      addSystemMessage(`Подключились к комнате ${roomId}`);
-    });
+function loadSession() {
+  try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null'); } catch (_) { return null; }
+}
 
-    hostConn.on('data', (msg) => {
-      if (msg?.type === 'ping') {
-        if (hostConn.open) hostConn.send({ type: 'pong' });
-        return;
-      }
-      handleMessageFromHost(msg);
-    });
+function getMyRooms() {
+  try { return JSON.parse(localStorage.getItem('cobrowser_my_rooms') || '{}') || {}; } catch (_) { return {}; }
+}
 
-    hostConn.on('close', () => {
-      setConnStatus('● переподключение...', 'warn');
-      scheduleGuestReconnect(roomId);
-    });
+function markMyRoom(roomId) {
+  const rooms = getMyRooms();
+  rooms[roomId] = Date.now();
+  Object.keys(rooms).forEach(k => { if (Date.now() - rooms[k] > 24 * 3600 * 1000) delete rooms[k]; });
+  try { localStorage.setItem('cobrowser_my_rooms', JSON.stringify(rooms)); } catch (_) {}
+}
 
-    hostConn.on('error', () => {
-      setConnStatus('● ошибка связи', 'err');
-      scheduleGuestReconnect(roomId);
-    });
+function forgetMyRoom(roomId) {
+  const rooms = getMyRooms();
+  delete rooms[roomId];
+  try {
+    localStorage.setItem('cobrowser_my_rooms', JSON.stringify(rooms));
+    localStorage.removeItem(ROOM_STATE_PREFIX + roomId);
+  } catch (_) {}
+}
+
+// Состояние комнаты хоста сохраняем, чтобы после обновления страницы сайт/видео не сбрасывались.
+function persistRoomState() {
+  if (!activeCreateAsHost || !roomState.id || !isHost()) return;
+  try {
+    const snap = stateSnapshot();
+    localStorage.setItem(ROOM_STATE_PREFIX + roomState.id, JSON.stringify({
+      mode: snap.mode, query: snap.query, browserUrl: snap.browserUrl, ruMode: snap.ruMode,
+      videoFocus: snap.videoFocus, cropApplied: snap.cropApplied, cropRect: snap.cropRect,
+      media: snap.media ? { playing: false, time: snap.media.time } : null,
+      savedAt: Date.now()
+    }));
+  } catch (_) {}
+}
+
+function restoreRoomState(roomId) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ROOM_STATE_PREFIX + roomId) || 'null');
+    if (!raw || Date.now() - raw.savedAt > 12 * 3600 * 1000) return false;
+    roomState.mode = raw.mode || 'search';
+    roomState.query = raw.query || '';
+    roomState.browserUrl = raw.browserUrl || '';
+    roomState.ruMode = Boolean(raw.ruMode);
+    roomState.videoFocus = Boolean(raw.videoFocus);
+    roomState.cropApplied = Boolean(raw.cropApplied);
+    roomState.cropRect = raw.cropRect || { ...DEFAULT_CROP };
+    roomState.media = raw.media ? { playing: false, time: raw.media.time || 0, at: Date.now() } : null;
+    return Boolean(raw.browserUrl || raw.query);
+  } catch (_) { return false; }
+}
+
+function makeEmptyRoomState() {
+  return {
+    id: null, hostPeerId: null, controllerPeerId: null, ruMode: false,
+    videoFocus: false, cropApplied: false, cropRect: { ...DEFAULT_CROP },
+    mode: 'search', query: '', browserUrl: '', media: null, sharePeerId: null, users: []
+  };
+}
+
+// Копия состояния для отправки: время видео пересчитывается на «сейчас».
+function stateSnapshot() {
+  const snap = { ...roomState };
+  if (snap.media) {
+    const m = snap.media;
+    snap.media = {
+      playing: Boolean(m.playing),
+      time: m.playing ? (m.time || 0) + (Date.now() - (m.at || Date.now())) / 1000 : (m.time || 0)
+    };
+  }
+  return snap;
+}
+
+// ---------- Подключение гостя к хосту ----------
+let hostConnStartedAt = 0;
+let announcedRoom = null;
+
+function connectGuestToHost(roomId) {
+  if (!peer || peer.destroyed || !currentUser || activeCreateAsHost) return;
+  if (hostConn && hostConn.open) return;
+  if (hostConn && Date.now() - hostConnStartedAt < 12000) return; // уже подключаемся
+
+  if (peer.disconnected) {
+    try { peer.reconnect(); } catch (_) {}
+  }
+  if (hostConn) {
+    try { hostConn.close(); } catch (_) {}
+    hostConn = null;
+  }
+
+  const hostPeerId = `${PEER_PREFIX}${roomId}`;
+  let conn;
+  try {
+    conn = peer.connect(hostPeerId, { reliable: true });
   } catch (e) {
     scheduleGuestReconnect(roomId);
+    return;
   }
+  hostConn = conn;
+  hostConnStartedAt = Date.now();
+  setConnStatus('● подключение...', 'warn');
+
+  const openTimeout = setTimeout(() => {
+    if (hostConn === conn && !conn.open) {
+      try { conn.close(); } catch (_) {}
+      hostConn = null;
+      scheduleGuestReconnect(roomId);
+    }
+  }, 12000);
+
+  conn.on('open', () => {
+    clearTimeout(openTimeout);
+    if (hostConn !== conn) return;
+    guestRetryCount = 0;
+    setConnStatus('● онлайн', 'ok');
+    conn.send({ type: 'join', user: buildMePayload(peer.id) });
+    if (announcedRoom !== roomId) {
+      announcedRoom = roomId;
+      addSystemMessage(`Подключились к комнате ${roomId}`);
+    }
+    if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 300);
+  });
+
+  conn.on('data', (msg) => {
+    if (hostConn !== conn) return;
+    if (msg?.type === 'ping') {
+      if (conn.open) { try { conn.send({ type: 'pong' }); } catch (_) {} }
+      return;
+    }
+    handleMessageFromHost(msg);
+  });
+
+  conn.on('close', () => {
+    clearTimeout(openTimeout);
+    if (hostConn !== conn) return; // это старое соединение, уже заменено новым
+    hostConn = null;
+    setConnStatus('● переподключение...', 'warn');
+    scheduleGuestReconnect(roomId);
+  });
+
+  conn.on('error', () => {
+    clearTimeout(openTimeout);
+    if (hostConn !== conn) return;
+    hostConn = null;
+    setConnStatus('● ошибка связи', 'err');
+    scheduleGuestReconnect(roomId);
+  });
 }
 
 function scheduleGuestReconnect(roomId) {
   if (reconnectTimer || activeCreateAsHost || !activeRoomId) return;
+  const delays = [800, 1500, 2500, 4000, 6000];
+  const delay = delays[Math.min(guestRetryCount, delays.length - 1)];
+  guestRetryCount++;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
+    if (!activeRoomId || activeCreateAsHost) return;
     if (peer && !peer.destroyed && peer.disconnected) {
       try { peer.reconnect(); } catch (_) {}
     }
+    if (!peer || peer.destroyed) {
+      startRoom(roomId, false, { retry: true });
+      return;
+    }
     connectGuestToHost(roomId);
-  }, 2500);
+  }, delay);
 }
 
 function startHeartbeat() {
@@ -743,8 +865,8 @@ function startHeartbeat() {
           try { conn.send({ type: 'ping' }); } catch (_) {}
         }
       });
-    } else if (hostConn) {
-      if (hostConn.open) {
+    } else if (!activeCreateAsHost) {
+      if (hostConn && hostConn.open) {
         try { hostConn.send({ type: 'ping' }); } catch (_) {}
       } else {
         connectGuestToHost(activeRoomId);
@@ -753,135 +875,152 @@ function startHeartbeat() {
   }, 8000);
 }
 
-function startRoom(roomId, createAsHost) {
+function startRoom(roomId, createAsHost, opts = {}) {
   clearRoomTimers();
+  if (hostRetryTimer) { clearTimeout(hostRetryTimer); hostRetryTimer = null; }
+  stopScreenShare(true);
+  clearRemoteScreen();
   if (peer) {
-    try { peer.destroy(); } catch (_) {}
+    const old = peer;
+    peer = null;
+    try { old.destroy(); } catch (_) {}
   }
   connections.clear();
   hostConn = null;
   activeRoomId = roomId;
-  if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
   activeCreateAsHost = createAsHost;
+  if (!opts.retry) { hostRetryCount = 0; guestRetryCount = 0; announcedRoom = null; }
+  saveSession();
+  if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 250);
 
+  if (roomState.id !== roomId) {
+    unmountSite();
+    roomState = makeEmptyRoomState();
+  }
   roomState.id = roomId;
-  const newUrl = `${window.location.pathname}?room=${roomId}`;
-  window.history.pushState({}, '', newUrl);
+  let restored = false;
+  if (createAsHost) restored = restoreRoomState(roomId);
+
+  window.history.replaceState({}, '', `${window.location.pathname}?room=${roomId}`);
   document.getElementById('current-room-id').textContent = roomId;
   setConnStatus('● подключение...', 'warn');
   showScreen('room');
 
   const desiredId = createAsHost ? `${PEER_PREFIX}${roomId}` : undefined;
-  peer = new Peer(desiredId, {
-    config: {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ]
-    }
+  const thisPeer = new Peer(desiredId, {
+    config: { iceServers: ICE_SERVERS, iceCandidatePoolSize: 4 },
+    pingInterval: 5000
   });
+  peer = thisPeer;
 
-  peer.on('open', (myPeerId) => {
+  thisPeer.on('open', (myPeerId) => {
+    if (peer !== thisPeer) return;
     setConnStatus('● онлайн', 'ok');
     const me = buildMePayload(myPeerId);
 
     if (createAsHost) {
+      hostRetryCount = 0;
+      markMyRoom(roomId);
       roomState.hostPeerId = myPeerId;
       roomState.controllerPeerId = myPeerId;
+      roomState.sharePeerId = null;
       roomState.users = [me];
       updateUI();
-      addSystemMessage('Комната создана. Вы — Главный (👑).');
+      addSystemMessage(restored ? 'Комната восстановлена после обновления страницы. Вы — Главный (👑).' : 'Комната создана. Вы — Главный (👑).');
     } else {
       connectGuestToHost(roomId);
     }
     startHeartbeat();
-    if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 500);
+    if (typeof cbTrackPresence === 'function') setTimeout(cbTrackPresence, 400);
   });
 
-  peer.on('disconnected', () => {
+  thisPeer.on('disconnected', () => {
+    if (peer !== thisPeer) return;
     setConnStatus('● переподключение...', 'warn');
-    if (peer && !peer.destroyed) {
-      setTimeout(() => {
-        if (peer && !peer.destroyed && peer.disconnected) {
-          try { peer.reconnect(); } catch (_) {}
-        }
-      }, 1500);
-    }
+    setTimeout(() => {
+      if (peer === thisPeer && !thisPeer.destroyed && thisPeer.disconnected) {
+        try { thisPeer.reconnect(); } catch (_) {}
+      }
+    }, 1000);
   });
 
-  peer.on('connection', (conn) => {
-    conn.on('open', () => {
-      if (isHost()) {
-        connections.set(conn.peer, conn);
-        conn.send({ type: 'state', state: roomState });
-      }
-    });
+  // Входящий звонок = трансляция экрана
+  thisPeer.on('call', (call) => {
+    if (peer !== thisPeer) return;
+    handleIncomingCall(call);
+  });
+
+  thisPeer.on('connection', (conn) => {
+    if (peer !== thisPeer) return;
+
+    const onOpen = () => {
+      if (!isHost()) return;
+      connections.set(conn.peer, conn);
+      try { conn.send({ type: 'state', state: stateSnapshot() }); } catch (_) {}
+    };
+    if (conn.open) onOpen(); else conn.on('open', onOpen);
 
     conn.on('data', (msg) => {
       if (!msg || msg.type === 'ping' || msg.type === 'pong') return;
-      if (msg.type === 'friend-request') {
-        if (isHost() && (msg.toUserId || msg.toPeerId)) {
-          const target = roomState.users.find(u =>
-            (msg.toUserId && u.userId === msg.toUserId) ||
-            (msg.toPeerId && u.peerId === msg.toPeerId)
-          );
-          if (target && target.peerId === peer.id) {
-            handleIncomingFriendRequest(msg);
-          } else if (target && target.peerId && target.peerId !== conn.peer) {
-            sendDirectPeerMessage(target.peerId, msg);
-          }
-        } else {
-          handleIncomingFriendRequest(msg);
-        }
-        return;
-      }
-      if (msg.type === 'friend-accept') {
-        if (isHost() && (msg.toUserId || msg.toPeerId)) {
-          const target = roomState.users.find(u =>
-            (msg.toUserId && u.userId === msg.toUserId) ||
-            (msg.toPeerId && u.peerId === msg.toPeerId)
-          );
-          if (target && target.peerId === peer.id) {
-            upsertFriendRecord({ ...msg.from, lastRoom: msg.from.roomId || roomState.id || '' });
-          } else if (target && target.peerId && target.peerId !== conn.peer) {
-            sendDirectPeerMessage(target.peerId, msg);
-          }
-        } else {
-          upsertFriendRecord({ ...msg.from, lastRoom: msg.from.roomId || roomState.id || '' });
-        }
-        return;
-      }
-
-      if (isHost()) {
-        handleMessageAtHost(conn.peer, msg);
-      }
+      if (isHost()) handleMessageAtHost(conn.peer, msg);
     });
 
     conn.on('close', () => {
       if (!isHost()) return;
+      // Если гость переподключился, старое соединение не должно удалять новое.
+      if (connections.get(conn.peer) !== conn) return;
       connections.delete(conn.peer);
-      const removed = roomState.users.find(u => u.peerId === conn.peer);
-      roomState.users = roomState.users.filter(u => u.peerId !== conn.peer);
-      if (roomState.controllerPeerId === conn.peer) {
-        roomState.controllerPeerId = roomState.hostPeerId;
-      }
-      if (removed) addSystemMessage(`${removed.name} вышел из комнаты`);
-      broadcastState();
-      updateUI();
+      removeUserFromRoom(conn.peer);
     });
+
+    conn.on('error', () => {});
   });
 
-  peer.on('error', (err) => {
+  thisPeer.on('error', (err) => {
+    if (peer !== thisPeer) return;
+    console.warn('PeerJS:', err.type, err);
+
     if (err.type === 'unavailable-id') {
-      startRoom(roomId, false);
+      if (createAsHost) {
+        // Наш прошлый peer-id ещё не освободился на сервере (после F5). Пробуем снова.
+        hostRetryCount++;
+        const maxRetries = opts.maxHostRetries || 12;
+        if (hostRetryCount <= maxRetries) {
+          setConnStatus('● восстанавливаем комнату...', 'warn');
+          hostRetryTimer = setTimeout(() => startRoom(roomId, true, { ...opts, retry: true }), 1500);
+        } else {
+          startRoom(roomId, false);
+        }
+      }
     } else if (err.type === 'peer-unavailable') {
       setConnStatus('● ждём хоста...', 'warn');
-      if (!createAsHost) scheduleGuestReconnect(roomId);
+      if (!createAsHost) {
+        if (hostConn && !hostConn.open) hostConn = null;
+        scheduleGuestReconnect(roomId);
+      }
+    } else if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
+      setConnStatus('● нет связи с сервером...', 'err');
+      if (!thisPeer.destroyed && thisPeer.disconnected) {
+        setTimeout(() => { try { thisPeer.reconnect(); } catch (_) {} }, 2000);
+      } else if (thisPeer.destroyed) {
+        setTimeout(() => {
+          if (activeRoomId === roomId) startRoom(roomId, createAsHost, { ...opts, retry: true });
+        }, 3000);
+      }
     } else {
       setConnStatus('● сбой сети', 'err');
-      console.error(err);
     }
   });
+}
+
+function removeUserFromRoom(peerId) {
+  const removed = roomState.users.find(u => u.peerId === peerId);
+  roomState.users = roomState.users.filter(u => u.peerId !== peerId);
+  if (roomState.controllerPeerId === peerId) roomState.controllerPeerId = roomState.hostPeerId;
+  if (roomState.sharePeerId === peerId) roomState.sharePeerId = null;
+  if (removed) addSystemMessage(`${removed.name} вышел из комнаты`);
+  broadcastState();
+  updateUI();
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -910,8 +1049,20 @@ function handleMessageAtHost(fromPeerId, msg) {
   if (msg.type === 'join') {
     const cleanUser = {
       ...msg.user,
+      peerId: fromPeerId,
       avatar: getValidAvatar(msg.user.avatar, msg.user.name || msg.user.userId)
     };
+    // Убираем «призраков»: тот же человек после обновления страницы получает новый peerId.
+    const ghosts = roomState.users.filter(u => u.userId && u.userId === cleanUser.userId && u.peerId !== cleanUser.peerId && u.peerId !== roomState.hostPeerId);
+    ghosts.forEach(g => {
+      const c = connections.get(g.peerId);
+      connections.delete(g.peerId);
+      if (c) { try { c.close(); } catch (_) {} }
+      if (roomState.controllerPeerId === g.peerId) roomState.controllerPeerId = roomState.hostPeerId;
+      if (roomState.sharePeerId === g.peerId) roomState.sharePeerId = null;
+    });
+    roomState.users = roomState.users.filter(u => !ghosts.includes(u));
+
     const idx = roomState.users.findIndex(u => u.peerId === cleanUser.peerId);
     if (idx >= 0) {
       roomState.users[idx] = cleanUser;
@@ -927,32 +1078,48 @@ function handleMessageAtHost(fromPeerId, msg) {
       avatar: getValidAvatar(msg.sender?.avatar, msg.sender?.name || msg.sender?.userId),
       isHost: msg.sender?.peerId === roomState.hostPeerId
     };
-    const payload = { type: 'chat', sender: senderObj, text: msg.text };
-    broadcastRaw(payload);
-    appendChatMessage(senderObj, msg.text);
+    const payload = { type: 'chat', sender: senderObj, text: String(msg.text || '').slice(0, 2000) };
+    broadcastRaw(payload, fromPeerId); // отправителю не возвращаем — у него сообщение уже есть
+    appendChatMessage(senderObj, payload.text);
   } else if (msg.type === 'nav' && fromPeerId === roomState.controllerPeerId) {
-    roomState.mode = msg.mode;
-    roomState.query = msg.query || '';
-    roomState.browserUrl = msg.url || '';
-    if (typeof msg.ruMode === 'boolean') roomState.ruMode = msg.ruMode;
-    if (roomState.mode !== 'frame') {
-      roomState.videoFocus = false;
-      roomState.cropApplied = false;
-    }
-    broadcastState();
-    updateUI();
+    applyNavAtHost(msg);
   } else if (msg.type === 'ru-mode' && fromPeerId === roomState.controllerPeerId) {
     roomState.ruMode = Boolean(msg.ruMode);
     broadcastState();
     updateUI();
   } else if (msg.type === 'video-focus' && fromPeerId === roomState.controllerPeerId) {
-    roomState = { ...roomState, ...msg };
+    const { type, ...patch } = msg;
+    roomState = { ...roomState, ...patch };
+    broadcastState();
+    updateUI();
+  } else if (msg.type === 'media') {
+    hostHandleMedia(fromPeerId, msg);
+  } else if (msg.type === 'share' && fromPeerId === roomState.controllerPeerId) {
+    roomState.sharePeerId = msg.on ? fromPeerId : (roomState.sharePeerId === fromPeerId ? null : roomState.sharePeerId);
     broadcastState();
     updateUI();
   }
 }
 
+function applyNavAtHost(msg) {
+  const prevUrl = roomState.browserUrl;
+  roomState.mode = msg.mode;
+  roomState.query = msg.query || '';
+  roomState.browserUrl = msg.url || msg.browserUrl || '';
+  if (typeof msg.ruMode === 'boolean') roomState.ruMode = msg.ruMode;
+  if (roomState.mode !== 'frame') {
+    roomState.videoFocus = false;
+    roomState.cropApplied = false;
+    roomState.media = null;
+  } else if (roomState.browserUrl !== prevUrl) {
+    roomState.media = { playing: false, time: 0, at: Date.now() };
+  }
+  broadcastState();
+  updateUI();
+}
+
 function handleMessageFromHost(msg) {
+  if (!msg) return;
   if (msg.type === 'state') {
     roomState = msg.state;
     updateUI();
@@ -960,19 +1127,14 @@ function handleMessageFromHost(msg) {
     appendChatMessage(msg.sender, msg.text);
   } else if (msg.type === 'system') {
     addSystemMessage(msg.text);
-  } else if (msg.type === 'friend-request') {
-    if (!msg.toUserId || msg.toUserId === currentUser?.id || msg.toPeerId === peer?.id) {
-      handleIncomingFriendRequest(msg);
-    }
-  } else if (msg.type === 'friend-accept') {
-    if (!msg.toUserId || msg.toUserId === currentUser?.id || msg.toPeerId === peer?.id) {
-      upsertFriendRecord({ ...msg.from, lastRoom: msg.from.roomId || roomState.id || '' });
-    }
+  } else if (msg.type === 'media') {
+    applyMediaCommand(msg);
   }
 }
 
-function broadcastRaw(payload) {
-  connections.forEach(conn => {
+function broadcastRaw(payload, exceptPeerId) {
+  connections.forEach((conn, id) => {
+    if (id === exceptPeerId) return;
     if (conn.open) {
       try { conn.send(payload); } catch (_) {}
     }
@@ -980,7 +1142,8 @@ function broadcastRaw(payload) {
 }
 
 function broadcastState() {
-  broadcastRaw({ type: 'state', state: roomState });
+  broadcastRaw({ type: 'state', state: stateSnapshot() });
+  persistRoomState();
 }
 
 function setController(targetPeerId) {
@@ -1005,7 +1168,7 @@ function setRuMode(enabled) {
     const sysMsg = {
       type: 'system',
       text: nextVal
-        ? '🇷🇺 Режим «Для России» включён'
+        ? '🇷🇺 Режим «Для России» включён — поиск в Google с регионом РФ'
         : 'Режим «Для России» выключен'
     };
     broadcastRaw(sysMsg);
@@ -1018,7 +1181,7 @@ function setRuMode(enabled) {
 }
 
 ruToggleBtn.onclick = () => {
-  if (!canControlRoom()) return;
+  if (!isHost() && !hasControl()) return;
   setRuMode(!roomState.ruMode);
 };
 
@@ -1027,11 +1190,11 @@ function updateRuModeUI() {
   ruToggleBtn.classList.toggle('active', active);
   ruToggleBtn.setAttribute('aria-pressed', String(active));
   ruToggleBtn.textContent = active ? 'Вкл' : 'Выкл';
-  ruToggleBtn.disabled = !canControlRoom();
+  ruToggleBtn.disabled = !(isHost() || hasControl());
 
   googleHint.textContent = active
-    ? '🇷🇺 Режим для России включён — общий поиск и быстрый запуск в браузере'
-    : 'Введи поисковый запрос или вставь ссылку — откроется в браузере со звуком';
+    ? '🇷🇺 Режим для России включён — поиск в Google по РФ'
+    : 'Введите запрос для поиска в Google или адрес сайта';
 }
 
 // --- РЕАЛЬНОЕ СРЕЗАНИЕ ПО РАМКЕ ---
@@ -1252,10 +1415,10 @@ function updateUI() {
     badge.textContent = '👀 Зритель';
   }
 
-  browserControls.style.display = canControlRoom() ? 'flex' : 'none';
+  browserControls.style.display = (isHost() || hasControl()) ? 'flex' : 'none';
 
   const framingNow = Boolean(roomState.videoFocus) && !roomState.cropApplied;
-  if (canControlRoom() || framingNow) {
+  if (hasControl() || framingNow) {
     shield.classList.add('hidden');
   } else {
     shield.classList.remove('hidden');
@@ -1264,6 +1427,7 @@ function updateUI() {
   updateRuModeUI();
   applyBrowserState();
   applyVideoFocusUI();
+  applyShareState();
   renderUsers();
 }
 
@@ -1309,7 +1473,7 @@ function renderUsers() {
       friendBtn.className = `friend-add-btn ${alreadyFriend ? 'added' : (isPending ? 'pending' : '')}`;
       friendBtn.textContent = alreadyFriend ? '✓ Друг' : (isPending ? '⏳ Заявка' : '+ В друзья');
       friendBtn.disabled = alreadyFriend || isPending;
-      friendBtn.onclick = () => sendFriendRequest(u);
+      friendBtn.onclick = () => cbSendFriendRequest(u.userId || u.name);
       actions.appendChild(friendBtn);
     }
 
@@ -1333,17 +1497,17 @@ function renderUsers() {
 }
 
 document.getElementById('copy-invite-btn').onclick = () => {
-  navigator.clipboard.writeText(window.location.href).then(() => {
+  const inviteLink = `${window.location.origin}${window.location.pathname}?room=${roomState.id || activeRoomId || ''}`;
+  navigator.clipboard.writeText(inviteLink).then(() => {
     alert('Ссылка скопирована! Кидай другу.');
   });
 };
 
-// --- 3. ПОИСК И НАДЁЖНЫЙ ЗАПУСК В БРАУЗЕРЕ ---
+// --- 3. ПОИСК GOOGLE И ОТКРЫВАТЕЛЬ САЙТОВ ---
 const iframe = document.getElementById('virtual-browser-frame');
 const googleLauncher = document.getElementById('google-launcher');
 const topInput = document.getElementById('neko-url-input');
 const googleQueryInput = document.getElementById('google-query-input');
-const ytSearchStatusEl = document.getElementById('yt-search-status');
 const searchResultsEl = document.getElementById('search-results');
 
 function isDirectUrl(raw) {
@@ -1361,406 +1525,572 @@ function toFullUrl(raw) {
   return base;
 }
 
-function extractYouTubeId(raw) {
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  const directIdMatch = trimmed.match(/^[a-zA-Z0-9_-]{11}$/);
-  if (directIdMatch) return directIdMatch[0];
-
-  try {
-    const normalized = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-    const u = new URL(normalized);
-    if (u.hostname.includes('youtu.be')) {
-      const id = u.pathname.replace(/^\/+/, '').split('/')[0];
-      return id ? id.slice(0, 11) : null;
-    }
-    if (u.hostname.includes('youtube.com')) {
-      if (u.searchParams.get('v')) return u.searchParams.get('v').slice(0, 11);
-      const parts = u.pathname.split('/').filter(Boolean);
-      const idx = parts.findIndex(p => p === 'shorts' || p === 'embed' || p === 'live' || p === 'v');
-      if (idx !== -1 && parts[idx + 1]) return parts[idx + 1].slice(0, 11);
-    }
-  } catch (_) {}
-  return null;
+function buildGoogleSearchUrl(query, extraParam = '') {
+  const q = encodeURIComponent((query || '').trim());
+  const ruParams = roomState.ruMode ? '&gl=ru&hl=ru' : '';
+  return `https://www.google.com/search?q=${q}${extraParam}${ruParams}`;
 }
 
-function formatDuration(sec) {
-  if (!Number.isFinite(sec) || sec <= 0) return '';
-  return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
-}
-
-function syncUrlToRoom(url, label = '') {
-  if (!url || !canControlRoom()) return false;
-  sendNavigation({
-    mode: 'frame',
-    query: roomState.query || label || '',
-    browserUrl: url,
-    videoFocus: false,
-    cropApplied: false
-  });
-  return true;
-}
-
-function createVideoCard({ url, title, channel, durationSec, thumb, isDirectVideo = false }) {
-  const card = document.createElement('div');
-  card.className = 'yt-video-card';
-
-  if (thumb) {
-    const img = document.createElement('img');
-    img.className = 'yt-video-thumb';
-    img.src = thumb;
-    img.alt = title || 'Результат';
-    img.loading = 'lazy';
-    card.appendChild(img);
-  }
-
-  const info = document.createElement('div');
-  info.className = 'yt-video-info';
-
-  const titleEl = document.createElement('div');
-  titleEl.className = 'yt-video-title';
-  titleEl.textContent = title || 'Ссылка';
-
-  const dur = formatDuration(durationSec);
-  const metaParts = [channel, dur, isDirectVideo ? 'Прямой запуск видео' : ''].filter(Boolean);
-  const metaEl = document.createElement('div');
-  metaEl.className = 'yt-video-meta';
-  metaEl.textContent = metaParts.join(' • ') || 'Google';
-
-  const actions = document.createElement('div');
-  actions.className = 'yt-video-actions';
-
-  const openLink = document.createElement('a');
-  openLink.className = 'btn-primary btn-small';
-  openLink.href = url;
-  openLink.target = '_blank';
-  openLink.rel = 'noopener noreferrer';
-  openLink.style.textDecoration = 'none';
-  openLink.style.display = 'inline-flex';
-  openLink.style.alignItems = 'center';
-  openLink.textContent = '▶ Запустить в браузере';
-  openLink.addEventListener('click', () => {
-    syncUrlToRoom(url, title);
-  });
-
-  const syncBtn = document.createElement('button');
-  syncBtn.type = 'button';
-  syncBtn.className = 'btn-secondary btn-small';
-  syncBtn.textContent = 'Кинуть в комнату';
-  syncBtn.onclick = () => {
-    if (!canControlRoom()) {
-      return alert('Синхронизировать ссылку может участник с пультом или Главный (👑).');
-    }
-    syncUrlToRoom(url, title);
-    if (ytSearchStatusEl) {
-      ytSearchStatusEl.textContent = 'Ссылка отправлена участникам комнаты';
-    }
-  };
-
-  actions.append(openLink, syncBtn);
-  info.append(titleEl, metaEl, actions);
-  card.appendChild(info);
-  return card;
-}
-
-async function renderSearchHub(query) {
-  const q = (query || '').trim();
+function renderGoogleResults(query) {
   searchResultsEl.innerHTML = '';
+  const q = (query || '').trim();
+  if (!q) return;
 
-  if (!q) {
-    lastSearchedQuery = '';
-    if (ytSearchStatusEl) ytSearchStatusEl.textContent = '';
-    return;
-  }
-
-  const ytId = extractYouTubeId(q);
-  if (ytId) {
-    const watchUrl = `https://www.youtube.com/watch?v=${ytId}`;
-    lastSearchedQuery = q;
-    if (ytSearchStatusEl) {
-      ytSearchStatusEl.textContent = 'Видео готово к запуску в браузере со звуком';
+  const items = [
+    {
+      title: `Найти в Google: «${q}»`,
+      url: buildGoogleSearchUrl(q)
+    },
+    {
+      title: `Картинки в Google: «${q}»`,
+      url: buildGoogleSearchUrl(q, '&tbm=isch')
+    },
+    {
+      title: `Видео в Google: «${q}»`,
+      url: buildGoogleSearchUrl(q, '&tbm=vid')
     }
-    searchResultsEl.appendChild(createVideoCard({
-      url: watchUrl,
-      title: `Видео YouTube (${ytId})`,
-      channel: 'YouTube',
-      durationSec: 0,
-      thumb: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`,
-      isDirectVideo: true
-    }));
-    return;
+  ];
+
+  items.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'result-card';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'r-title';
+    titleEl.textContent = item.title;
+
+    const urlEl = document.createElement('div');
+    urlEl.className = 'r-url';
+    urlEl.textContent = item.url;
+
+    const actions = document.createElement('div');
+    actions.className = 'r-actions';
+
+    const openTabBtn = document.createElement('button');
+    openTabBtn.type = 'button';
+    openTabBtn.className = 'btn-primary btn-small';
+    openTabBtn.textContent = 'Найти в Google';
+    openTabBtn.onclick = () => {
+      window.open(item.url, '_blank', 'noopener,noreferrer');
+    };
+
+    actions.appendChild(openTabBtn);
+    card.appendChild(titleEl);
+    card.appendChild(urlEl);
+    card.appendChild(actions);
+    searchResultsEl.appendChild(card);
+  });
+}
+
+// ================= САЙТЫ, ВИДЕО-СИНХРОНИЗАЦИЯ, ТРАНСЛЯЦИЯ ЭКРАНА =================
+const ytHolderParent = document.getElementById('iframe-stage');
+const directVideo = document.getElementById('direct-video');
+const screenVideo = document.getElementById('screen-video');
+const mediaTapBtn = document.getElementById('media-tap');
+const frameWarning = document.getElementById('frame-warning');
+const shareBanner = document.getElementById('share-banner');
+const shareBtn = document.getElementById('screen-share-btn');
+const unmuteBtn = document.getElementById('unmute-btn');
+
+const LIKELY_BLOCKED = [
+  'google.com', 'youtube.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'netflix.com',
+  'kinopoisk.ru', 'ivi.ru', 'okko.tv', 'wink.ru', 'more.tv', 'primevideo.com', 'disneyplus.com', 'hbomax.com',
+  'tiktok.com', 'yandex.ru', 'ya.ru', 'vk.com', 'ok.ru', 'github.com', 'reddit.com', 'linkedin.com', 'telegram.org', 't.me'
+];
+
+function parseTimeParam(v) {
+  if (!v) return 0;
+  if (/^\d+$/.test(v)) return Number(v);
+  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(v);
+  if (!m) return 0;
+  return (Number(m[1] || 0) * 3600) + (Number(m[2] || 0) * 60) + Number(m[3] || 0);
+}
+
+// Превращает ссылку в то, что реально можно показать внутри страницы.
+function resolveSite(raw) {
+  let u;
+  try { u = new URL(raw); } catch (_) { return { kind: 'frame', src: raw, blockedLikely: false }; }
+  const host = u.hostname.replace(/^(www|m)\./, '');
+  const parts = u.pathname.split('/').filter(Boolean);
+
+  let ytId = '';
+  if (host === 'youtu.be') ytId = parts[0] || '';
+  else if (host === 'youtube.com' || host === 'music.youtube.com' || host === 'youtube-nocookie.com') {
+    if (u.pathname === '/watch') ytId = u.searchParams.get('v') || '';
+    else if (['shorts', 'live', 'embed', 'v'].includes(parts[0])) ytId = parts[1] || '';
+  }
+  if (/^[\w-]{11}$/.test(ytId)) {
+    return { kind: 'youtube', id: ytId, start: parseTimeParam(u.searchParams.get('t') || u.searchParams.get('start')) };
   }
 
-  if (isDirectUrl(q)) {
-    const fullUrl = toFullUrl(q);
-    lastSearchedQuery = q;
-    if (ytSearchStatusEl) {
-      ytSearchStatusEl.textContent = 'Ссылка готова к открытию в браузере';
+  if (host === 'vimeo.com' && /^\d+$/.test(parts[0] || '')) {
+    return { kind: 'embed', src: `https://player.vimeo.com/video/${parts[0]}` };
+  }
+  if (host === 'rutube.ru' && parts[0] === 'video' && parts[1]) {
+    return { kind: 'embed', src: `https://rutube.ru/play/embed/${parts[1]}` };
+  }
+  if (host === 'dailymotion.com' && parts[0] === 'video' && parts[1]) {
+    return { kind: 'embed', src: `https://www.dailymotion.com/embed/video/${parts[1].split('_')[0]}` };
+  }
+  if (host === 'twitch.tv' && parts[0]) {
+    const parent = window.location.hostname || 'localhost';
+    if (parts[0] === 'videos' && parts[1]) return { kind: 'embed', src: `https://player.twitch.tv/?video=${parts[1]}&parent=${parent}&autoplay=false` };
+    return { kind: 'embed', src: `https://player.twitch.tv/?channel=${parts[0]}&parent=${parent}&autoplay=false` };
+  }
+  if (/\.(mp4|webm|ogv|ogg|mov|m4v)$/i.test(u.pathname)) {
+    return { kind: 'video', src: raw };
+  }
+  return { kind: 'frame', src: raw, blockedLikely: LIKELY_BLOCKED.some(d => host === d || host.endsWith('.' + d)) };
+}
+
+// ---------- адаптеры плеера ----------
+let mediaAdapter = null;
+let mediaSuppressUntil = 0;
+let mediaInitialApplied = false;
+let pendingMediaCmd = null;
+let desiredPlaying = null;
+let mediaPollTimer = null;
+let mediaLast = null;
+let lastTickAt = 0;
+let ytApiPromise = null;
+let loadedSiteKey = null;
+let ytPlayerDiv = null;
+
+function loadYouTubeApi() {
+  if (window.YT && window.YT.Player) return Promise.resolve();
+  if (ytApiPromise) return ytApiPromise;
+  ytApiPromise = new Promise((resolve, reject) => {
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { if (typeof prev === 'function') prev(); resolve(); };
+    const sc = document.createElement('script');
+    sc.src = 'https://www.youtube.com/iframe_api';
+    sc.onerror = () => { ytApiPromise = null; reject(new Error('YouTube API не загрузился')); };
+    document.head.appendChild(sc);
+  });
+  return ytApiPromise;
+}
+
+function mediaSuppress(ms = 1200) { mediaSuppressUntil = Date.now() + ms; mediaLast = null; }
+function canEmitMedia() { return Date.now() > mediaSuppressUntil && (isHost() || hasControl()); }
+
+function emitMedia(action) {
+  if (!mediaAdapter || !mediaAdapter.ready || !canEmitMedia()) return;
+  const cmd = { type: 'media', action, time: mediaAdapter.getTime() };
+  if (isHost()) hostHandleMedia(peer.id, cmd);
+  else if (hostConn && hostConn.open) hostConn.send(cmd);
+}
+
+function hostHandleMedia(origin, cmd) {
+  if (origin !== roomState.controllerPeerId && origin !== roomState.hostPeerId) return;
+  const prev = roomState.media || { playing: false, time: 0, at: Date.now() };
+  roomState.media = {
+    playing: cmd.action === 'play' || cmd.action === 'tick' ? true : (cmd.action === 'pause' ? false : prev.playing),
+    time: Number(cmd.time) || 0,
+    at: Date.now()
+  };
+  const out = { type: 'media', action: cmd.action, time: roomState.media.time };
+  connections.forEach((c, id) => {
+    if (id !== origin && c.open) { try { c.send(out); } catch (_) {} }
+  });
+  if (origin !== peer.id) applyMediaCommand(out);
+  persistRoomState();
+}
+
+function showTapToPlay(show) {
+  if (mediaTapBtn) mediaTapBtn.classList.toggle('hidden', !show);
+}
+
+function verifyPlayback() {
+  setTimeout(() => {
+    if (mediaAdapter && mediaAdapter.ready && desiredPlaying && !mediaAdapter.isPlaying()) showTapToPlay(true);
+  }, 1600);
+}
+
+function applyMediaCommand(cmd) {
+  if (roomState.sharePeerId) return;
+  if (!mediaAdapter || !mediaAdapter.ready) { pendingMediaCmd = cmd; return; }
+  mediaSuppress();
+  const t = Number(cmd.time) || 0;
+  const cur = mediaAdapter.getTime();
+  if (cmd.action === 'pause') {
+    desiredPlaying = false;
+    showTapToPlay(false);
+    mediaAdapter.pause();
+    if (Math.abs(cur - t) > 0.5) mediaAdapter.seek(t);
+  } else if (cmd.action === 'play') {
+    desiredPlaying = true;
+    if (Math.abs(cur - t) > 0.7) mediaAdapter.seek(t);
+    mediaAdapter.play();
+    verifyPlayback();
+  } else if (cmd.action === 'seek') {
+    mediaAdapter.seek(t);
+  } else if (cmd.action === 'tick') {
+    if (Math.abs(cur - t) > 2) mediaAdapter.seek(t);
+    if (!mediaAdapter.isPlaying() && desiredPlaying !== false) {
+      desiredPlaying = true;
+      mediaAdapter.play();
+      verifyPlayback();
     }
-    searchResultsEl.appendChild(createVideoCard({
-      url: fullUrl,
-      title: 'Открыть ссылку в браузере',
-      channel: 'Внешний сайт',
-      durationSec: 0,
-      thumb: ''
-    }));
-    return;
   }
+}
 
-  if (q === lastSearchedQuery && searchResultsEl.children.length) return;
-  lastSearchedQuery = q;
+function syncMediaFromState() {
+  if (!mediaAdapter || !mediaAdapter.ready || mediaInitialApplied || !roomState.media) return;
+  mediaInitialApplied = true;
+  applyMediaCommand({ action: roomState.media.playing ? 'play' : 'pause', time: roomState.media.time || 0 });
+}
 
-  if (ytSearchStatusEl) ytSearchStatusEl.textContent = `Ищу «${q}»...`;
-
-  // 1. Поиск через Google Custom Search JSON API
-  if (GOOGLE_SEARCH_API_KEY) {
-    try {
-      const cxParam = GOOGLE_CSE_CX ? `&cx=${encodeURIComponent(GOOGLE_CSE_CX)}` : '';
-      const gUrl = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(GOOGLE_SEARCH_API_KEY)}${cxParam}&q=${encodeURIComponent(q)}`;
-      const res = await fetch(gUrl, { signal: AbortSignal.timeout(4500) });
-      const data = await res.json().catch(() => null);
-
-      if (res.ok && data && Array.isArray(data.items) && data.items.length) {
-        const items = data.items.slice(0, 8);
-        if (ytSearchStatusEl) {
-          ytSearchStatusEl.textContent = `Найдено через Google (${items.length})`;
-        }
-        const frag = document.createDocumentFragment();
-        for (const item of items) {
-          const link = item.link || '';
-          if (!link) continue;
-          const foundYtId = extractYouTubeId(link);
-          const thumb = foundYtId
-            ? `https://i.ytimg.com/vi/${foundYtId}/hqdefault.jpg`
-            : (item.pagemap?.cse_thumbnail?.[0]?.src || '');
-          frag.appendChild(createVideoCard({
-            url: link,
-            title: item.title || link,
-            channel: item.displayLink || 'Google',
-            durationSec: 0,
-            thumb,
-            isDirectVideo: Boolean(foundYtId)
-          }));
-        }
-        if (frag.children.length) {
-          searchResultsEl.replaceChildren(frag);
-          return;
-        }
-      } else if (!res.ok) {
-        const apiErrMsg = data?.error?.message || `HTTP ${res.status}`;
-        if (ytSearchStatusEl) {
-          ytSearchStatusEl.textContent = `Google API (${apiErrMsg}) — ищу через резервные источники...`;
-        }
-      }
-    } catch (_) {}
+function onAdapterReady() {
+  mediaAdapter.ready = true;
+  if (pendingMediaCmd) {
+    const c = pendingMediaCmd; pendingMediaCmd = null;
+    mediaInitialApplied = true;
+    applyMediaCommand(c);
+  } else {
+    syncMediaFromState();
   }
+  startMediaPoll();
+}
 
-  // 2. Резерв: Piped
-  for (const base of PIPED_INSTANCES) {
-    try {
-      const res = await fetch(
-        `${base}/search?q=${encodeURIComponent(q)}&filter=videos`,
-        { signal: AbortSignal.timeout(3500) }
-      );
-      if (!res.ok) continue;
-      const data = await res.json();
-      const items = Array.isArray(data.items)
-        ? data.items
-            .filter(x => x.type === 'stream' || (x.url && x.url.includes('/watch?v=')))
-            .slice(0, 8)
-        : [];
-
-      if (!items.length) continue;
-
-      if (ytSearchStatusEl) {
-        ytSearchStatusEl.textContent = `Найдено роликов: ${items.length}`;
-      }
-
-      const frag = document.createDocumentFragment();
-      for (const v of items) {
-        const id = (v.url || '').split('/watch?v=')[1]?.split('&')[0];
-        if (!id) continue;
-        frag.appendChild(createVideoCard({
-          url: `https://www.youtube.com/watch?v=${id}`,
-          title: v.title || 'Без названия',
-          channel: v.uploaderName || 'YouTube',
-          durationSec: v.duration || 0,
-          thumb: v.thumbnail || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
-          isDirectVideo: true
-        }));
-      }
-      if (frag.children.length) {
-        searchResultsEl.replaceChildren(frag);
-        return;
-      }
-    } catch (_) {}
-  }
-
-  // 3. Резерв: Invidious
-  for (const base of INVIDIOUS_INSTANCES) {
-    try {
-      const res = await fetch(
-        `${base}/api/v1/search?q=${encodeURIComponent(q)}&type=video`,
-        { signal: AbortSignal.timeout(3500) }
-      );
-      if (!res.ok) continue;
-      const list = await res.json();
-      const videos = Array.isArray(list) ? list.filter(v => v.videoId).slice(0, 8) : [];
-      if (!videos.length) continue;
-
-      if (ytSearchStatusEl) {
-        ytSearchStatusEl.textContent = `Найдено роликов: ${videos.length}`;
-      }
-
-      const frag = document.createDocumentFragment();
-      for (const v of videos) {
-        frag.appendChild(createVideoCard({
-          url: `https://www.youtube.com/watch?v=${v.videoId}`,
-          title: v.title || 'Без названия',
-          channel: v.author || 'YouTube',
-          durationSec: v.lengthSeconds || 0,
-          thumb: `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
-          isDirectVideo: true
-        }));
-      }
-      searchResultsEl.replaceChildren(frag);
-      return;
-    } catch (_) {}
-  }
-
-  // 4. Резерв: DuckDuckGo Instant Answer API
-  try {
-    const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1`;
-    const ddgRes = await fetch(ddgUrl, { signal: AbortSignal.timeout(3500) });
-    if (ddgRes.ok) {
-      const ddg = await ddgRes.json();
-      const cards = [];
-      const pushTopic = (item) => {
-        if (!item) return;
-        if (item.FirstURL && item.Text) {
-          cards.push({
-            url: item.FirstURL,
-            title: item.Text,
-            channel: 'DuckDuckGo',
-            durationSec: 0,
-            thumb: item.Icon?.URL ? (item.Icon.URL.startsWith('http') ? item.Icon.URL : `https://duckduckgo.com${item.Icon.URL}`) : ''
-          });
-        }
-        if (Array.isArray(item.Topics)) item.Topics.forEach(pushTopic);
-      };
-      if (ddg.AbstractURL && ddg.Heading) {
-        cards.push({
-          url: ddg.AbstractURL,
-          title: ddg.Heading,
-          channel: ddg.AbstractSource || 'DuckDuckGo',
-          durationSec: 0,
-          thumb: ddg.Image ? (ddg.Image.startsWith('http') ? ddg.Image : `https://duckduckgo.com${ddg.Image}`) : ''
-        });
-      }
-      if (Array.isArray(ddg.Results)) ddg.Results.forEach(pushTopic);
-      if (Array.isArray(ddg.RelatedTopics)) ddg.RelatedTopics.forEach(pushTopic);
-
-      const uniqueCards = [];
-      const seenUrls = new Set();
-      for (const c of cards) {
-        if (!c.url || seenUrls.has(c.url)) continue;
-        seenUrls.add(c.url);
-        uniqueCards.push(c);
-        if (uniqueCards.length >= 8) break;
-      }
-
-      if (uniqueCards.length) {
-        if (ytSearchStatusEl) {
-          ytSearchStatusEl.textContent = `Найдено результатов: ${uniqueCards.length}`;
-        }
-        const frag = document.createDocumentFragment();
-        uniqueCards.forEach(c => frag.appendChild(createVideoCard(c)));
-        searchResultsEl.replaceChildren(frag);
-        return;
-      }
+function startMediaPoll() {
+  stopMediaPoll();
+  mediaPollTimer = setInterval(() => {
+    if (!mediaAdapter || !mediaAdapter.ready) return;
+    const now = Date.now();
+    const t = mediaAdapter.getTime();
+    const playing = mediaAdapter.isPlaying();
+    if (canEmitMedia() && mediaLast) {
+      const expected = mediaLast.playing ? mediaLast.t + (now - mediaLast.at) / 1000 : mediaLast.t;
+      if (Math.abs(t - expected) > 1.5) emitMedia('seek');
+      else if (playing && now - lastTickAt > 5000) { lastTickAt = now; emitMedia('tick'); }
     }
-  } catch (_) {}
+    mediaLast = { t, at: now, playing };
+  }, 600);
+}
 
-  const googleSearchUrl = `https://www.google.com/search?q=${encodeURIComponent(q)}`;
-  const ytSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
-  if (ytSearchStatusEl) {
-    ytSearchStatusEl.textContent = 'Открой выдачу напрямую в Google или YouTube';
+function stopMediaPoll() {
+  if (mediaPollTimer) { clearInterval(mediaPollTimer); mediaPollTimer = null; }
+}
+
+function mountYouTube(site) {
+  ytPlayerDiv = document.createElement('div');
+  ytPlayerDiv.className = 'media-holder';
+  ytHolderParent.appendChild(ytPlayerDiv);
+  loadYouTubeApi().then(() => {
+    if (!ytPlayerDiv || loadedSiteKey !== 'youtube|' + site.id) return;
+    const vars = { autoplay: 0, playsinline: 1, rel: 0, enablejsapi: 1, start: site.start || 0 };
+    if (/^https?:$/.test(window.location.protocol)) vars.origin = window.location.origin;
+    const adapter = { ready: false, kind: 'youtube', player: null };
+    mediaAdapter = adapter;
+    adapter.player = new YT.Player(ytPlayerDiv, {
+      width: '100%', height: '100%', videoId: site.id, playerVars: vars,
+      events: {
+        onReady: () => {
+          if (mediaAdapter !== adapter) return;
+          adapter.getTime = () => { try { return adapter.player.getCurrentTime() || 0; } catch (_) { return 0; } };
+          adapter.isPlaying = () => { try { return adapter.player.getPlayerState() === 1; } catch (_) { return false; } };
+          adapter.play = () => { try { adapter.player.playVideo(); } catch (_) {} };
+          adapter.pause = () => { try { adapter.player.pauseVideo(); } catch (_) {} };
+          adapter.seek = (t) => { try { adapter.player.seekTo(t, true); } catch (_) {} };
+          adapter.destroy = () => { try { adapter.player.destroy(); } catch (_) {} };
+          onAdapterReady();
+        },
+        onStateChange: (e) => {
+          if (mediaAdapter !== adapter || !adapter.ready) return;
+          if (e.data === 1) { showTapToPlay(false); emitMedia('play'); }
+          else if (e.data === 2) emitMedia('pause');
+        },
+        onError: () => {
+          addSystemMessage('⚠ YouTube не разрешил встроить это видео (ограничение автора). Используй «📺 Трансляция экрана».');
+        }
+      }
+    });
+  }).catch(() => {
+    addSystemMessage('⚠ Не удалось загрузить плеер YouTube (возможно, он заблокирован у вас). Используй «📺 Трансляция экрана».');
+  });
+}
+
+function mountDirectVideo(site) {
+  directVideo.classList.remove('hidden');
+  directVideo.src = site.src;
+  const adapter = {
+    ready: false, kind: 'video',
+    getTime: () => directVideo.currentTime || 0,
+    isPlaying: () => !directVideo.paused && !directVideo.ended,
+    play: () => { directVideo.play().catch(() => showTapToPlay(true)); },
+    pause: () => directVideo.pause(),
+    seek: (t) => { try { directVideo.currentTime = t; } catch (_) {} },
+    destroy: () => { directVideo.pause(); directVideo.removeAttribute('src'); directVideo.load(); }
+  };
+  mediaAdapter = adapter;
+  directVideo.onplay = () => { if (mediaAdapter === adapter) { showTapToPlay(false); emitMedia('play'); } };
+  directVideo.onpause = () => { if (mediaAdapter === adapter && !directVideo.ended) emitMedia('pause'); };
+  directVideo.onseeked = () => { if (mediaAdapter === adapter) emitMedia('seek'); };
+  directVideo.onloadedmetadata = () => { if (mediaAdapter === adapter && !adapter.ready) onAdapterReady(); };
+  directVideo.onerror = () => addSystemMessage('⚠ Не удалось загрузить видеофайл по ссылке.');
+}
+
+function unmountSite() {
+  stopMediaPoll();
+  if (mediaAdapter && mediaAdapter.destroy) { try { mediaAdapter.destroy(); } catch (_) {} }
+  mediaAdapter = null;
+  mediaInitialApplied = false;
+  pendingMediaCmd = null;
+  desiredPlaying = null;
+  mediaLast = null;
+  showTapToPlay(false);
+  if (ytPlayerDiv) { try { ytPlayerDiv.remove(); } catch (_) {} ytPlayerDiv = null; }
+  directVideo.classList.add('hidden');
+  directVideo.onplay = directVideo.onpause = directVideo.onseeked = directVideo.onloadedmetadata = null;
+  try { iframe.src = 'about:blank'; } catch (_) {}
+  iframe.classList.add('hidden');
+  frameWarning.classList.add('hidden');
+  loadedSiteKey = null;
+}
+
+function mountSite(site) {
+  unmountSite();
+  if (site.kind === 'youtube') {
+    loadedSiteKey = 'youtube|' + site.id;
+    mountYouTube(site);
+  } else if (site.kind === 'video') {
+    loadedSiteKey = 'video|' + site.src;
+    mountDirectVideo(site);
+  } else {
+    loadedSiteKey = site.kind + '|' + site.src;
+    iframe.classList.remove('hidden');
+    iframe.src = site.src;
   }
-  searchResultsEl.appendChild(createVideoCard({
-    url: googleSearchUrl,
-    title: `Google: «${q}»`,
-    channel: 'Google Search',
-    durationSec: 0,
-    thumb: ''
-  }));
-  searchResultsEl.appendChild(createVideoCard({
-    url: ytSearchUrl,
-    title: `YouTube: «${q}»`,
-    channel: 'YouTube',
-    durationSec: 0,
-    thumb: ''
-  }));
 }
 
 function applyBrowserState() {
   if (roomState.mode === 'frame' && roomState.browserUrl) {
     googleLauncher.classList.add('hidden');
-    iframe.classList.remove('hidden');
-    if (iframe.src !== roomState.browserUrl) {
-      iframe.src = roomState.browserUrl;
+    const site = resolveSite(roomState.browserUrl);
+    const key = site.kind === 'youtube' ? 'youtube|' + site.id
+      : site.kind === 'video' ? 'video|' + site.src
+      : site.kind + '|' + site.src;
+    if (key !== loadedSiteKey) mountSite(site);
+    else syncMediaFromState();
+
+    const canNavigate = isHost() || hasControl();
+    const showWarn = site.kind === 'frame' && canNavigate && !roomState.sharePeerId;
+    frameWarning.classList.toggle('hidden', !showWarn);
+    if (showWarn) {
+      frameWarning.textContent = site.blockedLikely
+        ? '⚠ Этот сайт запрещает показ внутри чужих страниц — окно будет пустым. Нажми «📺 Трансляция экрана»: откроется что угодно, со звуком.'
+        : 'Окно пустое? Значит сайт запретил встраивание. Нажми «📺 Трансляция экрана» (или «↗ Вкладка»).';
     }
   } else {
+    if (loadedSiteKey !== null) unmountSite();
     iframe.classList.add('hidden');
     googleLauncher.classList.remove('hidden');
-
-    const activeQuery = roomState.query || '';
-    if (activeQuery && activeQuery !== lastSearchedQuery) {
-      if (document.activeElement !== googleQueryInput) googleQueryInput.value = activeQuery;
-      if (document.activeElement !== topInput) topInput.value = activeQuery;
-      renderSearchHub(activeQuery);
+    if (roomState.query) {
+      googleQueryInput.value = roomState.query;
+      topInput.value = roomState.query;
+      renderGoogleResults(roomState.query);
+    } else {
+      searchResultsEl.innerHTML = '';
     }
   }
 }
 
+// ---------- ТРАНСЛЯЦИЯ ЭКРАНА (работает для любых сайтов и со звуком) ----------
+let screenStream = null;
+const shareCalls = new Map();
+let incomingShareCall = null;
+
+function setSharePeer(id) {
+  if (isHost()) {
+    roomState.sharePeerId = id;
+    broadcastState();
+    updateUI();
+  } else if (hostConn && hostConn.open) {
+    hostConn.send({ type: 'share', on: Boolean(id) });
+  }
+}
+
+async function startScreenShare() {
+  if (!(isHost() || hasControl()) || screenStream) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    alert('Этот браузер не умеет транслировать экран (на телефонах обычно недоступно). Открой комнату в Chrome / Edge / Firefox на компьютере.');
+    return;
+  }
+  try {
+    screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30 } },
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      selfBrowserSurface: 'exclude',
+      surfaceSwitching: 'include',
+      systemAudio: 'include'
+    });
+  } catch (e) {
+    screenStream = null;
+    return; // пользователь закрыл окно выбора
+  }
+  const vt = screenStream.getVideoTracks()[0];
+  try { vt.contentHint = 'motion'; } catch (_) {}
+  vt.addEventListener('ended', () => stopScreenShare());
+  if (!screenStream.getAudioTracks().length) {
+    addSystemMessage('⚠ Звук не передаётся. В окне выбора выбери ВКЛАДКУ и включи «Передавать звук вкладки» (Chrome/Edge).');
+  }
+  if (mediaAdapter && mediaAdapter.ready) { mediaSuppress(); mediaAdapter.pause(); }
+  setSharePeer(peer.id);
+  callShareTargets();
+  updateShareUI();
+}
+
+function callShareTargets() {
+  if (!screenStream || !peer || peer.destroyed) return;
+  roomState.users.forEach(u => {
+    if (!u.peerId || u.peerId === peer.id || shareCalls.has(u.peerId)) return;
+    try {
+      const call = peer.call(u.peerId, screenStream, { metadata: { type: 'screen' } });
+      if (!call) return;
+      shareCalls.set(u.peerId, call);
+      const drop = () => { if (shareCalls.get(u.peerId) === call) shareCalls.delete(u.peerId); };
+      call.on('close', drop);
+      call.on('error', drop);
+      setTimeout(() => {
+        try {
+          (call.peerConnection?.getSenders() || []).forEach(s => {
+            if (s.track && s.track.kind === 'video') {
+              const p = s.getParameters();
+              if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+              p.encodings[0].maxBitrate = 3_000_000;
+              s.setParameters(p).catch(() => {});
+            }
+          });
+        } catch (_) {}
+      }, 1200);
+    } catch (e) { console.warn('call failed', e); }
+  });
+}
+
+function stopScreenShare(silent) {
+  const had = Boolean(screenStream);
+  if (screenStream) {
+    screenStream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
+    screenStream = null;
+  }
+  shareCalls.forEach(c => { try { c.close(); } catch (_) {} });
+  shareCalls.clear();
+  if (!silent && had && peer && roomState.sharePeerId === peer.id) setSharePeer(null);
+  updateShareUI();
+}
+
+function handleIncomingCall(call) {
+  if (!call.metadata || call.metadata.type !== 'screen' || screenStream) { try { call.close(); } catch (_) {} return; }
+  if (incomingShareCall && incomingShareCall !== call) { try { incomingShareCall.close(); } catch (_) {} }
+  incomingShareCall = call;
+  call.answer();
+  call.on('stream', (stream) => { if (incomingShareCall === call) showRemoteScreen(stream); });
+  call.on('close', () => { if (incomingShareCall === call) clearRemoteScreen(); });
+  call.on('error', () => { if (incomingShareCall === call) clearRemoteScreen(); });
+}
+
+function showRemoteScreen(stream) {
+  screenVideo.srcObject = stream;
+  screenVideo.muted = false;
+  browserBox.classList.add('screen-live');
+  if (mediaAdapter && mediaAdapter.ready) { mediaSuppress(); try { mediaAdapter.pause(); } catch (_) {} }
+  const p = screenVideo.play();
+  if (p && p.catch) {
+    p.catch(() => {
+      screenVideo.muted = true;
+      screenVideo.play().catch(() => {});
+      unmuteBtn.classList.remove('hidden');
+    });
+  }
+  updateShareUI();
+}
+
+function clearRemoteScreen() {
+  incomingShareCall = null;
+  if (screenVideo) { screenVideo.srcObject = null; }
+  browserBox.classList.remove('screen-live');
+  if (unmuteBtn) unmuteBtn.classList.add('hidden');
+  updateShareUI();
+}
+
+function updateShareUI() {
+  const canControl = isHost() || hasControl();
+  const iShare = Boolean(screenStream);
+  const someoneElse = Boolean(roomState.sharePeerId) && !iShare;
+  shareBtn.classList.toggle('hidden', !canControl || (someoneElse && !isHost()));
+  if (iShare) shareBtn.textContent = '⏹ Остановить трансляцию';
+  else if (someoneElse) shareBtn.textContent = '⏹ Остановить чужую трансляцию';
+  else shareBtn.textContent = '📺 Трансляция экрана';
+
+  const waiting = someoneElse && !browserBox.classList.contains('screen-live');
+  if (iShare) {
+    shareBanner.textContent = '📺 Вы транслируете экран всем в комнате. Не выбирайте вкладку CoBrowser — выберите вкладку с фильмом.';
+    shareBanner.classList.remove('hidden');
+  } else if (waiting) {
+    shareBanner.textContent = '📺 Подключаем трансляцию…';
+    shareBanner.classList.remove('hidden');
+  } else {
+    shareBanner.classList.add('hidden');
+  }
+}
+
+function applyShareState() {
+  // Если трансляцию остановили/передали другому, а мы ещё транслируем — остановиться.
+  if (screenStream && peer && roomState.sharePeerId !== peer.id) stopScreenShare(true);
+  if (!roomState.sharePeerId && browserBox.classList.contains('screen-live')) {
+    if (incomingShareCall) { try { incomingShareCall.close(); } catch (_) {} }
+    clearRemoteScreen();
+  }
+  if (screenStream) callShareTargets();
+  updateShareUI();
+}
+
+shareBtn.onclick = () => {
+  if (screenStream) { stopScreenShare(); return; }
+  if (roomState.sharePeerId && isHost()) { setSharePeer(null); return; }
+  startScreenShare();
+};
+
+unmuteBtn.onclick = () => {
+  screenVideo.muted = false;
+  screenVideo.play().catch(() => {});
+  unmuteBtn.classList.add('hidden');
+};
+
+mediaTapBtn.onclick = () => {
+  showTapToPlay(false);
+  if (mediaAdapter && mediaAdapter.ready) { mediaSuppress(); mediaAdapter.play(); }
+};
+
 function sendNavigation(nextState) {
   if (isHost()) {
+    const prevUrl = roomState.browserUrl;
     roomState = { ...roomState, ...nextState };
-    applyBrowserState();
-    applyVideoFocusUI();
+    if (roomState.mode !== 'frame') roomState.media = null;
+    else if (roomState.browserUrl !== prevUrl) roomState.media = { playing: false, time: 0, at: Date.now() };
+    updateUI();
     broadcastState();
   } else if (hasControl() && hostConn && hostConn.open) {
     hostConn.send({ type: 'nav', ...nextState });
   }
 }
 
-function handleSearchOrOpen(rawValue, openDirectIfUrl = false) {
+function handleSearchOrOpen(rawValue, openGoogleImmediately = false) {
   const val = (rawValue || '').trim();
   if (!val) {
-    lastSearchedQuery = '';
     sendNavigation({ mode: 'search', query: '', browserUrl: '', videoFocus: false, cropApplied: false });
-    searchResultsEl.innerHTML = '';
-    if (ytSearchStatusEl) ytSearchStatusEl.textContent = '';
-    return;
-  }
-
-  const ytId = extractYouTubeId(val);
-  if (ytId) {
-    const watchUrl = `https://www.youtube.com/watch?v=${ytId}`;
-    lastSearchedQuery = '';
-    sendNavigation({ mode: 'frame', query: watchUrl, browserUrl: watchUrl, videoFocus: false, cropApplied: false });
     return;
   }
 
   if (isDirectUrl(val)) {
     const url = toFullUrl(val);
-    lastSearchedQuery = '';
-    sendNavigation({ mode: 'frame', query: url, browserUrl: url, videoFocus: false, cropApplied: false });
-    return;
+    sendNavigation({ mode: 'frame', query: val, browserUrl: url, videoFocus: false, cropApplied: false });
+  } else {
+    sendNavigation({ mode: 'search', query: val, browserUrl: '', videoFocus: false, cropApplied: false });
+    if (openGoogleImmediately) {
+      window.open(buildGoogleSearchUrl(val), '_blank', 'noopener,noreferrer');
+    }
   }
-
-  lastSearchedQuery = '';
-  sendNavigation({ mode: 'search', query: val, browserUrl: '', videoFocus: false, cropApplied: false });
-  renderSearchHub(val);
 }
 
 document.getElementById('connect-browser-btn').onclick = () => {
@@ -1775,24 +2105,21 @@ topInput.addEventListener('keydown', (e) => {
 });
 
 document.getElementById('google-search-btn').onclick = () => {
-  handleSearchOrOpen(googleQueryInput.value, false);
+  handleSearchOrOpen(googleQueryInput.value, true);
 };
 
 googleQueryInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    handleSearchOrOpen(googleQueryInput.value, false);
+    handleSearchOrOpen(googleQueryInput.value, true);
   }
 });
 
 document.getElementById('external-open-btn').onclick = () => {
-  const q = (topInput.value || googleQueryInput.value || roomState.browserUrl || roomState.query || '').trim();
-  const ytId = extractYouTubeId(q);
-  const target = ytId
-    ? `https://www.youtube.com/watch?v=${ytId}`
-    : (isDirectUrl(q)
-        ? toFullUrl(q)
-        : (q ? `https://www.google.com/search?q=${encodeURIComponent(q)}` : 'https://www.google.com'));
+  const q = (topInput.value || googleQueryInput.value || roomState.query || '').trim();
+  const target = roomState.browserUrl
+    ? roomState.browserUrl
+    : (q ? buildGoogleSearchUrl(q) : 'https://www.google.com');
   window.open(target, '_blank', 'noopener,noreferrer');
 };
 
@@ -1802,7 +2129,13 @@ const chatMessages = document.getElementById('chat-messages');
 function addSystemMessage(text) {
   const div = document.createElement('div');
   div.className = 'msg';
-  div.innerHTML = `<div class="msg-body"><em style="color:var(--muted)">${text}</em></div>`;
+  const body = document.createElement('div');
+  body.className = 'msg-body';
+  const em = document.createElement('em');
+  em.style.color = 'var(--muted)';
+  em.textContent = text;
+  body.appendChild(em);
+  div.appendChild(body);
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
@@ -1871,7 +2204,11 @@ const inviteRoomFromUrl = new URLSearchParams(window.location.search).get('room'
 if (currentUser && currentUser.name) {
   currentUser.avatar = getValidAvatar(currentUser.avatar, currentUser.seed || currentUser.name);
   if (inviteRoomFromUrl) {
-    startRoom(inviteRoomFromUrl.toUpperCase(), false);
+    const roomCode = inviteRoomFromUrl.toUpperCase();
+    const sess = loadSession();
+    const sessionHost = Boolean(sess && sess.host && sess.roomId === roomCode);
+    const ownedRecently = !sessionHost && Date.now() - (getMyRooms()[roomCode] || 0) < 6 * 3600 * 1000;
+    startRoom(roomCode, sessionHost || ownedRecently, { maxHostRetries: sessionHost ? 12 : 3 });
   } else {
     openLobby();
   }
@@ -1910,16 +2247,17 @@ async function cbInit() {
       sessionData = { session: signed.data.session };
     }
     cbAuthUser = sessionData.session.user;
-    if (currentUser?.name) await cbEnsureProfile();
-    cbStartLastSeenHeartbeat();
-    await cbLoadSocial();
-    cbSubscribeSocial();
-    cbStartPresence();
-    cbSetSocialStatus('Подключено к синхронизации');
   } catch (e) {
     console.error('CoBrowser Supabase:', e);
     cbSetSocialStatus('Ошибка подключения: ' + (e.message || e));
+    return;
   }
+  // Дальше каждый шаг независим: сбой одного не должен ломать приглашения и онлайн-статус.
+  try { if (currentUser?.name) await cbEnsureProfile(); } catch (e) { console.error('profile', e); cbSetSocialStatus('Ошибка профиля: ' + (e.message || e)); }
+  try { cbStartPresence(); } catch (e) { console.error('presence', e); }
+  try { cbStartLastSeenHeartbeat(); } catch (e) { console.error('lastseen', e); }
+  try { await cbLoadSocial(); cbSubscribeSocial(); } catch (e) { console.error('social', e); }
+  cbSetSocialStatus('Подключено к синхронизации');
 }
 function cbSetSocialStatus(message) {
   const el = document.getElementById('social-status');
@@ -1964,7 +2302,7 @@ async function cbLoadSocial() {
   }
   const byId = new Map(profiles.map(p=>[p.id,p]));
   friendRequests = incoming.data.map(r=>({...byId.get(r.sender_id), requestId:r.id, userId:byId.get(r.sender_id)?.public_id}));
-  outgoingRequests = outgoing.data.map(r=>({...byId.get(r.receiver_id), requestId:r.id}));
+  outgoingRequests = outgoing.data.map(r=>({...byId.get(r.receiver_id), requestId:r.id, userId:byId.get(r.receiver_id)?.public_id}));
   friendsList = links.data.map(r=>byId.get(r.user_a===uid?r.user_b:r.user_a)).filter(Boolean)
     .map(p=>({userId:p.public_id,name:p.name,avatar:p.avatar,supabaseId:p.id,lastSeenAt:p.last_seen_at}));
   renderFriendRequests(); renderFriends();
@@ -2018,6 +2356,7 @@ async function cbDeclineRequest(requestId) {
   await cbLoadSocial();
 }
 function cbInstallDmUI() {
+  const lobby = document.querySelector('#lobby-screen .lobby-content') || document.querySelector('#lobby-screen .lobby-card') || document.getElementById('lobby-tab-friends').parentElement;
   const tabBar = document.querySelector('.lobby-tabs');
   const chatTab = document.createElement('button');
   chatTab.type = 'button'; chatTab.id = 'tab-chat-btn'; chatTab.className = 'tab-btn';
@@ -2153,6 +2492,7 @@ function cbOverrideFriendUI() {
   const add=document.getElementById('add-friend-manual-btn');
   if(add)add.onclick=async()=>{const input=document.getElementById('friend-name-input');await cbSendFriendRequest(input.value);input.value='';};
   window.acceptFriendRequest=cbAcceptRequest;
+  // Existing renderers are replaced so database request IDs are used.
   window.renderFriendRequests=function(){
     const list=document.getElementById('friend-requests-list'), count=document.getElementById('requests-count'), badge=document.getElementById('friend-req-badge');
     if(!list)return;count.textContent=friendRequests.length;badge.textContent=friendRequests.length;badge.classList.toggle('hidden',!friendRequests.length);list.innerHTML='';
@@ -2182,6 +2522,7 @@ document.querySelector('.user-badge')?.after(socialStatus);
 const originalSaveProfile=document.getElementById('save-profile-btn').onclick;
 document.getElementById('save-profile-btn').onclick=async function(){
   if(originalSaveProfile) originalSaveProfile();
+  // Дождаться анонимной авторизации и сохранить публичный профиль в облако.
   for(let i=0;i<30&&!cbAuthUser;i++) await new Promise(r=>setTimeout(r,200));
   if(cbAuthUser) await cbRefreshProfile();
 };
@@ -2189,9 +2530,7 @@ cbInit();
 
 
 // ================= ONLINE / ROOM INVITES =================
-let cbPresenceChannel = null;
-let cbPresenceUsers = {};
-let cbPresenceReady = false;
+
 
 let cbLastSeenTimer = null;
 async function cbSaveLastSeen() {
@@ -2221,6 +2560,7 @@ function cbStartLastSeenHeartbeat() {
     if (document.visibilityState === 'visible') cbSaveLastSeen();
   });
   window.addEventListener('pagehide', () => {
+    // Best effort: the last periodic timestamp remains available if the browser closes abruptly.
     cbSaveLastSeen();
   });
 }
@@ -2353,7 +2693,7 @@ function cbStartPresence() {
       });
       if (accepted) {
         cbPresenceChannel.send({type:'broadcast',event:'room-invite-accepted',payload:{to:payload.from,room_code:payload.room_code}});
-        startRoom(payload.room_code, false);
+        startRoom(String(payload.room_code).toUpperCase(), false);
       }
     })
     .on('broadcast', { event: 'room-join-request' }, async ({payload}) => {
@@ -2368,11 +2708,15 @@ function cbStartPresence() {
         acceptText: 'Разрешить вход'
       });
       if (accepted) {
-        cbPresenceChannel.send({type:'broadcast',event:'room-invite',payload:{to:payload.from,from:cbAuthUser.id,from_name:currentUser.name,room_code:activeRoomId}});
+        cbPresenceChannel.send({type:'broadcast',event:'room-join-approved',payload:{to:payload.from,from:cbAuthUser.id,room_code:activeRoomId}});
       }
     })
+    .on('broadcast', { event: 'room-join-approved' }, ({payload}) => {
+      if (payload?.to !== cbAuthUser.id || !payload.room_code) return;
+      startRoom(String(payload.room_code).toUpperCase(), false);
+    })
     .on('broadcast', { event: 'room-invite-accepted' }, ({payload}) => {
-      if (payload?.to === cbAuthUser.id) cbNotice('Друг принял приглашение и подключается к комнате.');
+      if (payload?.to === cbAuthUser.id) addSystemMessage('Друг принял приглашение и подключается к комнате…');
     })
     .subscribe(async status => {
       if (status === 'SUBSCRIBED') {
@@ -2465,7 +2809,7 @@ async function cbInviteFriendToRoom(friend) {
     to:friend.supabaseId,from:cbAuthUser.id,from_name:currentUser.name,room_code:activeRoomId
   }});
   if (error) return cbNotice('Не удалось отправить приглашение: '+error.message);
-  cbNotice('Приглашение отправлено '+friend.name+'.');
+  addSystemMessage('Приглашение отправлено: '+friend.name);
 }
 async function cbAskToJoinRoom(friend) {
   const online = cbPresenceUsers[friend.supabaseId];
@@ -2479,37 +2823,3 @@ async function cbAskToJoinRoom(friend) {
   }
   return cbNotice('Друг в комнате, но запросить вход можно только у её создателя.');
 }
-
-
-(function polishSearchHubUI() {
-  const style = document.createElement('style');
-  style.textContent = `
-    #google-launcher {
-      border-radius: 16px;
-      padding: 1.25rem;
-      background: rgba(18, 21, 31, 0.72);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-    }
-    #google-launcher h2,
-    #google-launcher .launcher-title,
-    #google-launcher .search-title {
-      margin-top: 0;
-    }
-    #search-results:empty {
-      display: none;
-    }
-  `;
-  document.head.appendChild(style);
-
-  const launcher = document.getElementById('google-launcher');
-  if (!launcher) return;
-
-  launcher.querySelectorAll('h1, h2, h3, p, label, span, button, input').forEach((el) => {
-    if (typeof el.textContent === 'string' && el.textContent.includes('YouTube • Поиск и запуск в браузере')) {
-      el.textContent = 'Поисковик и быстрый запуск';
-    }
-    if (el.tagName === 'INPUT' && typeof el.placeholder === 'string' && el.placeholder.includes('Что ищем на YouTube')) {
-      el.placeholder = 'Что ищем или ссылка...';
-    }
-  });
-})();

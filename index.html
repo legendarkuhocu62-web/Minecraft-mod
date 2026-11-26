@@ -5,7 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CoBrowser — Смотрим вместе</title>
   <link rel="stylesheet" href="style.css">
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script>
+    // запасной источник, если первый CDN недоступен
+    if (!window.Peer) document.write('<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"><\/script>');
+  </script>
 </head>
 <body>
 
@@ -118,6 +122,7 @@
         <span id="conn-status" class="conn-status">● онлайн</span>
         <button id="invite-friend-room-btn" type="button" class="btn-small btn-primary">＋ Пригласить друга</button>
         <button id="copy-invite-btn" class="btn-small btn-secondary">Копировать ссылку</button>
+        <button id="screen-share-btn" type="button" class="btn-small btn-primary hidden" title="Показать всем свой экран/вкладку со звуком — работает с любыми сайтами">📺 Трансляция экрана</button>
 
         <div class="ru-mode-box">
           <span class="ru-label">🇷🇺 Для России</span>
@@ -131,9 +136,9 @@
       </div>
 
       <div class="browser-connect">
-        <input type="text" id="neko-url-input" placeholder="Поиск в Google или вставь ссылку...">
-        <button id="connect-browser-btn" class="btn-primary btn-small">Найти</button>
-        <button id="external-open-btn" class="btn-secondary btn-small" title="Открыть в браузере">↗ Браузер</button>
+        <input type="text" id="neko-url-input" placeholder="Поиск в Google или введите URL">
+        <button id="connect-browser-btn" class="btn-primary btn-small">Найти в Google / Открыть</button>
+        <button id="external-open-btn" class="btn-secondary btn-small" title="Открыть в новой вкладке">↗ Вкладка</button>
       </div>
     </header>
 
@@ -150,20 +155,24 @@
           </div>
         </div>
 
+        <div id="frame-warning" class="frame-warning hidden"></div>
+        <div id="share-banner" class="share-banner hidden"></div>
+
         <div id="google-launcher" class="google-launcher">
-          <div class="yt-hub-title">Google • Поиск и запуск в браузере</div>
-          <p id="google-hint" class="google-hint">Введи запрос для поиска или вставь ссылку — откроется в браузере со звуком</p>
+          <div class="google-logo">Google</div>
+          <p id="google-hint" class="google-hint">Введите запрос для поиска в Google или адрес сайта</p>
           <div class="google-search-box">
-            <input type="text" id="google-query-input" placeholder="Что ищем в Google или ссылка...">
-            <button type="button" id="google-search-btn" class="btn-primary">Найти</button>
+            <input type="text" id="google-query-input" placeholder="Поиск в Google или введите URL">
+            <button type="button" id="google-search-btn" class="btn-primary">Найти в Google</button>
           </div>
-          <div id="yt-search-status" class="yt-search-status"></div>
           <div id="search-results" class="search-results"></div>
         </div>
 
         <div id="iframe-crop-wrap" class="iframe-crop-wrap">
           <div id="iframe-stage" class="iframe-stage">
-            <iframe id="virtual-browser-frame" class="hidden" allow="autoplay; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
+            <iframe id="virtual-browser-frame" class="hidden" allow="autoplay; fullscreen; encrypted-media; picture-in-picture; clipboard-read; clipboard-write" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+            <video id="direct-video" class="media-holder hidden" controls playsinline></video>
+            <video id="screen-video" class="media-holder" autoplay playsinline></video>
           </div>
 
           <div id="crop-overlay" class="crop-overlay hidden">
@@ -179,6 +188,9 @@
             </div>
           </div>
         </div>
+
+        <button type="button" id="media-tap" class="media-tap hidden">▶ Нажми, чтобы включить видео со звуком</button>
+        <button type="button" id="unmute-btn" class="media-tap hidden">🔊 Включить звук трансляции</button>
 
         <div id="viewer-shield" class="viewer-shield hidden" title="Управление сейчас у другого участника"></div>
       </div>
@@ -205,5 +217,4 @@
   <script src="app.js"></script>
 </body>
 </html>
-
 
